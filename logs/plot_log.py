@@ -229,6 +229,26 @@ def plot_torque_comparison(t, d, out):
     return path
 
 
+def plot_motor_torque(t, d, out):
+    cols = [f"tau_motor_{i}" for i in range(13) if f"tau_motor_{i}" in d]
+    if not cols:
+        return None
+    n = 13; ncols = 3; nrows = math.ceil(n / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 3.5 * nrows), sharex=True)
+    axes = np.array(axes).reshape(-1); fig.suptitle("Motor Torque (4-bar)", fontsize=14)
+    for i in range(n):
+        ax = axes[i]
+        col = f"tau_motor_{i}"
+        if col in d:
+            ax.plot(t, d[col], lw=0.8, color="tab:orange")
+        ax.set_title(joint_label("motor_torque", i)); ax.grid(True, alpha=0.3)
+        ax.set_xlabel("time [s]")
+    for i in range(n, len(axes)):
+        axes[i].axis("off")
+    fig.tight_layout(); path = out / "06b_motor_torque.png"; fig.savefig(path, dpi=150); plt.close(fig)
+    return path
+
+
 def plot_obs_frame(t, d, out):
     obs_cols = [f"obs_{i}" for i in range(47) if f"obs_{i}" in d]
     if not obs_cols:
@@ -568,6 +588,7 @@ def plot_csv(csv_path: Path, show: bool = False) -> Path:
         lambda: plot_joint_group(t, data, "action", "RL Actions", "04_actions.png", out_dir, n_joints=12),
         lambda: plot_joint_pos_vs_action(t, data, out_dir),
         lambda: plot_torque_comparison(t, data, out_dir),
+        lambda: plot_motor_torque(t, data, out_dir),
         lambda: plot_obs_frame(t, data, out_dir),
     ]:
         p = fn()

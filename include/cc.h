@@ -2,6 +2,7 @@
 #define p73_cc_H
 
 #include "p73_lib/robot_data.h"
+#include "p73_lib/4bar_jac_func.h"
 #include "wholebody_functions.h"
 #include "onnxruntime_cxx_api.h"
 #include <rclcpp/rclcpp.hpp>
@@ -95,7 +96,7 @@ public:
 
     //////////////////////// processNoise (TOCABI sim2real pattern) ////////////////////////
     // is_on_robot_: true=real robot (direct sensor + LPF), false=sim (noise + numerical diff + LPF)
-    bool is_on_robot_ = true;
+    bool is_on_robot_ = false;
 
     // Filtered/noised joint state — used by BOTH obs and PD (matching TOCABI)
     Matrix<double, MODEL_DOF, 1> q_noise_;       // joint position (noised in sim, direct on robot)
@@ -133,6 +134,10 @@ public:
     VectorQd q_spline_;
     VectorQd torque_spline_;
 
+    // 4-bar kinematics used in sim to reproduce motor-level torque clamping
+    // through J^T (state_estimator does not populate rd_.four_bar_Jaco_ in simMode).
+    FourBarKinematics sim_four_bar_;
+
     double action_scale_ = 0.5;  // from ActionsCfg scale
 
     //////////////////////// Timing ////////////////////////
@@ -145,7 +150,7 @@ public:
 
     // Gait phase counter (50Hz step counter)
     int gait_step_counter_ = 0;
-    int gait_period_steps_ = 50;  // from rough_env_cfg __post_init__
+    int gait_period_steps_ = 60;  // from rough_env_cfg __post_init__
 
     // Velocity command (updated by ROS2 subscriber)
     std::mutex vel_mutex_;

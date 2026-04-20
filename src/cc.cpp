@@ -519,7 +519,6 @@ void CustomController::computeFast()
         // During ramp-in: always use PD control for safety
         for (int i = 0; i < MODEL_DOF; i++) {
             torque_rl_(i) = kp_p73_(i) * (rd_.q_desired(i) - q_noise_(i)) - kd_p73_(i) * q_vel_noise_(i);
-            torque_rl_(i) = DyrosMath::minmax_cut(torque_rl_(i), -torque_bound_p73_(i), torque_bound_p73_(i));
         }
     } else if (use_actuator_net_) {
         // Actuator Net mode: forward pass every tick (1kHz)
@@ -532,13 +531,45 @@ void CustomController::computeFast()
         rd_.q_desired = target_pos;
         for (int i = 0; i < MODEL_DOF; i++) {
             torque_rl_(i) = kp_p73_(i) * (rd_.q_desired(i) - q_noise_(i)) - kd_p73_(i) * q_vel_noise_(i);
-            torque_rl_(i) = DyrosMath::minmax_cut(torque_rl_(i), -torque_bound_p73_(i), torque_bound_p73_(i));
         }
     }
 
-    rd_.torque_desired = torque_rl_;
+    // torque_bound_p73_ is the MOTOR-side limit. The clamp must happen on the
+    // motor-space torque (τ_m = J^T τ_j), not on joint-space torque.
+    //
+    //   Real robot: rd_.four_bar_Jaco_ is populated by state_estimator; map
+    //               τ_j → τ_m, clamp τ_m, send as motor torque. state_estimator
+    //               also clamps τ_m at the ECAT boundary (double safety).
+    //
+    //   MuJoCo   : the sim model has no 4-bar (each <motor> acts directly on its
+    //               joint), and state_estimator does not populate four_bar_Jaco_
+    //               in simMode. We run the 4-bar kinematics locally here: compute
+    //               motor pos from current joint pos, evaluate J, then apply
+    //               τ_j' = J^{-T} · clamp(J^T τ_j, ±τ_m_bound). Feeding τ_j'
+    //               back to MuJoCo reproduces the real motor-limit envelope
+    //               (nonlinear, configuration-dependent) at the joint level.
     if (is_on_robot_) {
-        rd_.torque_desired = WBC::JointTorqueToMotorTorque(rd_, torque_rl_);
+        VectorQd torque_motor = WBC::JointTorqueToMotorTorque(rd_, torque_rl_);
+        for (int i = 0; i < MODEL_DOF; i++) {
+            torque_motor(i) = DyrosMath::minmax_cut(torque_motor(i), -torque_bound_p73_(i), torque_bound_p73_(i));
+        }
+        rd_.torque_desired = torque_motor;
+    } else {
+        // Evaluate J at the current joint configuration.
+        VectorQd q_motor_curr;
+        sim_four_bar_.Joint2MotorDesiredPos(q_noise_, q_motor_curr);
+        VectorQd joint_pos_dummy, joint_vel_dummy;
+        VectorQd motor_vel_zero = VectorQd::Zero();
+        sim_four_bar_.Motor2JointPosVel(q_motor_curr, joint_pos_dummy, motor_vel_zero, joint_vel_dummy);
+        MatrixQQd J = sim_four_bar_.getFourBarJaco();
+
+        VectorQd torque_motor = J.transpose() * torque_rl_;
+        for (int i = 0; i < MODEL_DOF; i++) {
+            torque_motor(i) = DyrosMath::minmax_cut(torque_motor(i), -torque_bound_p73_(i), torque_bound_p73_(i));
+        }
+        // τ_j' = J^{-T} τ_m_clamped — joint-space torque that realizes the
+        // clamped motor torque through the 4-bar.
+        rd_.torque_desired = J.transpose().inverse() * torque_motor;
     }
 
     // // // Spline transition for first 100ms
@@ -841,15 +872,13 @@ void CustomController::computeActuatorNetTorques()
                       anet_vel_hist_[i][1];     // ~20ms ago
 
         double torque = anetForward(i, anet_input) * anet_output_scale_;
-        torque = DyrosMath::minmax_cut(torque, -torque_bound_p73_(i), torque_bound_p73_(i));
         cached_anet_torque_(i) = torque;
     }
 
     // --- 3. WaistYaw (joint 12): PD control ---
+    // Clamping is performed in motor space at the top of computeFast().
     cached_anet_torque_(12) = kp_p73_(12) * (q_default_p73_(12) - q_noise_(12))
                             - kd_p73_(12) * q_vel_noise_(12);
-    cached_anet_torque_(12) = DyrosMath::minmax_cut(
-        cached_anet_torque_(12), -torque_bound_p73_(12), torque_bound_p73_(12));
 }
 
 // =====================================================================

@@ -208,6 +208,28 @@ def plot_imu(t, d, out):
     return path
 
 
+def plot_vel_tracking(t, d, out):
+    """Per-axis (x/y/yaw) velocity command vs true body-frame velocity."""
+    lin_b = compute_lin_vel_body(d)
+    axes_info = [
+        ("x", "cmd_vx", lin_b[0] if lin_b is not None else None, "tab:blue",   "vx_b [m/s]"),
+        ("y", "cmd_vy", lin_b[1] if lin_b is not None else None, "tab:orange", "vy_b [m/s]"),
+        ("yaw", "cmd_vyaw", d.get("ang_vel_bz"),                 "tab:green",  "wz_b [rad/s]"),
+    ]
+    fig, axes = plt.subplots(3, 1, figsize=(14, 9), sharex=True)
+    fig.suptitle("Velocity Command vs True Base Velocity (body frame)", fontsize=14)
+    for ax, (label, cmd_key, true_arr, color, ylabel) in zip(axes, axes_info):
+        if cmd_key in d:
+            ax.plot(t, d[cmd_key], lw=1.4, ls="--", color=color, label=f"{cmd_key} (cmd)")
+        if true_arr is not None:
+            ax.plot(t, true_arr, lw=1.0, color=color, alpha=0.9, label=f"{label} true")
+        ax.set_title(f"{label}-axis"); ax.set_ylabel(ylabel)
+        ax.grid(True, alpha=0.3); ax.legend(fontsize=9, loc="upper right")
+    axes[-1].set_xlabel("time [s]")
+    fig.tight_layout(); path = out / "01b_vel_tracking.png"; fig.savefig(path, dpi=150); plt.close(fig)
+    return path
+
+
 def plot_joint_group(t, d, prefix, title, filename, out, n_joints=13):
     cols = [f"{prefix}_{i}" for i in range(n_joints) if f"{prefix}_{i}" in d]
     if not cols:
@@ -629,6 +651,7 @@ def plot_csv(csv_path: Path, show: bool = False) -> Path:
     saved: List[Path] = []
     for fn in [
         lambda: plot_imu(t, data, out_dir),
+        lambda: plot_vel_tracking(t, data, out_dir),
         lambda: plot_joint_group(t, data, "q_raw", "Joint Position (raw)", "02_joint_pos_raw.png", out_dir),
         lambda: plot_joint_group(t, data, "qdot", "Joint Velocity", "03_joint_vel.png", out_dir),
         lambda: plot_joint_group(t, data, "action", "RL Actions", "04_actions.png", out_dir, n_joints=12),

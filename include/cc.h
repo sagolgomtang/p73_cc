@@ -134,21 +134,6 @@ public:
     VectorQd q_spline_;
     VectorQd torque_spline_;
 
-    // PACE encoder bias (rad), applied in PD error:
-    //     τ = Kp * (q_des - q + q_bias) - Kd * q_dot
-    // Values are system-ID results from p73_walker.py (branch: custom_regulate_actionrate).
-    // Order: Isaac/MuJoCo/SHM order — Roll, Pitch, Yaw, Knee, AnklePitch, AnkleRoll, +WaistYaw.
-    VectorQd encoder_bias_;
-
-    // q_desired delay buffer (matches Isaac DelayedPDActuator).
-    // Isaac uses uniform delay in [min_delay=0, max_delay=2] physics steps, mean=1 step.
-    // Isaac physics dt = 0.005 s → mean delay = 5 ms.
-    // cc.cpp runs at 1 kHz → 5 ticks.
-    static constexpr int kQDesiredDelayTicks = 5;
-    std::array<VectorQd, kQDesiredDelayTicks> q_desired_delay_buffer_;
-    int q_desired_delay_head_ = 0;
-    bool q_desired_delay_initialized_ = false;
-
     // 4-bar kinematics used in sim to reproduce motor-level torque clamping
     // through J^T (state_estimator does not populate rd_.four_bar_Jaco_ in simMode).
     FourBarKinematics sim_four_bar_;

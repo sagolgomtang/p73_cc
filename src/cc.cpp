@@ -68,16 +68,6 @@ void CustomController::initVariable()
                           352.0, 220.0, 95.0, 220.0, 95.0, 95.0,
                           152.0;
 
-    // PACE encoder bias — Best parameter set (from PACE system identification).
-    // Must match isaaclab_walker/assets/p73_walker.py  DelayedPDActuatorLUTCfg.encoder_bias
-    // exactly; otherwise the PD equilibrium here drifts away from what the policy
-    // was trained against.
-    // Order: L_HipRoll, L_HipPitch, L_HipYaw, L_Knee, L_AnklePitch, L_AnkleRoll,
-    //        R_HipRoll, R_HipPitch, R_HipYaw, R_Knee, R_AnklePitch, R_AnkleRoll, WaistYaw.
-    encoder_bias_ <<  0.0149, -0.1000, -0.1000, -0.1000, -0.1000, -0.1000,
-                      0.0295,  0.1000,  0.1000,  0.1000,  0.1000,  0.1000,
-                     -0.0021;
-
     q_limit_lower_p73_ << -0.58, -1.57, -0.78, 0.0, -1.05, -0.42,
                            -0.58, -2.09, -0.78, -2.56, -0.7, -0.42;
     q_limit_upper_p73_ << 0.3, 2.09, 0.78, 2.56, 0.7, 0.42,
@@ -403,9 +393,6 @@ void CustomController::computeFast()
         for (auto& h : anet_pos_err_hist_) h = {0.0, 0.0};
         for (auto& h : anet_vel_hist_) h = {0.0, 0.0};
 
-        // q_desired delay buffer: force re-prime on first compute below
-        q_desired_delay_initialized_ = false;
-
         // Initialize processNoise state
         q_noise_ = rd_.q_;
         q_noise_pre_ = q_noise_;
@@ -524,62 +511,26 @@ void CustomController::computeFast()
         target_pos(i) = DyrosMath::minmax_cut(target_pos(i), q_limit_lower_p73_(i), q_limit_upper_p73_(i));
     }
 
-    // --- Step 1: Raw q_desired (before delay) ---
-    //  • During ramp-in (first 100 ms): cubic spline from q_init_ to target_pos
-    //  • After ramp-in: direct target_pos
-    VectorQd q_des_raw;
+    // Position-level spline transition for first 100ms (PD ramp-in, always)
     if (control_time_us < start_time_ + 0.1e6) {
         for (int i = 0; i < MODEL_DOF; i++) {
-            q_des_raw(i) = DyrosMath::cubic(control_time_us, start_time_, start_time_ + 0.1e6,
-                                            q_init_(i), target_pos(i), 0.0, 0.0);
+            rd_.q_desired(i) = DyrosMath::cubic(control_time_us, start_time_, start_time_ + 0.1e6, q_init_(i), target_pos(i), 0.0, 0.0);
         }
-    } else {
-        q_des_raw = target_pos;
-    }
-
-    // --- Step 2: q_desired delay buffer (matches Isaac DelayedPDActuator) ---
-    //   Isaac config: min_delay=0, max_delay=2 physics steps.
-    //   Isaac physics dt = 0.005 s → mean delay ≈ 1 step = 5 ms.
-    //   cc.cpp runs at 1 kHz, so 5 ticks ≈ 5 ms.
-    //   Ring buffer: read slot at head (oldest, from kQDesiredDelayTicks ticks ago),
-    //                then overwrite that slot with current value, advance head.
-    VectorQd q_des_delayed;
-    if (!q_desired_delay_initialized_) {
-        for (int k = 0; k < kQDesiredDelayTicks; k++) q_desired_delay_buffer_[k] = q_des_raw;
-        q_desired_delay_head_ = 0;
-        q_desired_delay_initialized_ = true;
-        q_des_delayed = q_des_raw;
-    } else {
-        q_des_delayed = q_desired_delay_buffer_[q_desired_delay_head_];
-        q_desired_delay_buffer_[q_desired_delay_head_] = q_des_raw;
-        q_desired_delay_head_ = (q_desired_delay_head_ + 1) % kQDesiredDelayTicks;
-    }
-
-    // rd_.q_desired is what the PD / actuator net sees (post-delay). This matches
-    // the Isaac training pipeline where the delay buffer sits *before* PD.
-    rd_.q_desired = q_des_delayed;
-
-    // --- Step 3: Torque ---
-    //   PD law with PACE encoder bias:
-    //      τ = Kp · (q_des - q + q_bias) - Kd · q_dot
-    //   The +q_bias term shifts the PD equilibrium to match the real-robot
-    //   calibration, exactly as DelayedPDActuatorLUT.compute does in IsaacLab.
-    if (control_time_us < start_time_ + 0.1e6) {
-        // Ramp-in: always PD (safety — identical to prior behavior)
+        // During ramp-in: always use PD control for safety
         for (int i = 0; i < MODEL_DOF; i++) {
-            torque_rl_(i) = kp_p73_(i) * (rd_.q_desired(i) - q_noise_(i) + encoder_bias_(i))
-                          - kd_p73_(i) * q_vel_noise_(i);
+            torque_rl_(i) = kp_p73_(i) * (rd_.q_desired(i) - q_noise_(i)) - kd_p73_(i) * q_vel_noise_(i);
         }
     } else if (use_actuator_net_) {
-        // Actuator Net mode: forward pass every tick (1 kHz).
-        // Uses rd_.q_desired (already delayed) inside computeActuatorNetTorques.
+        // Actuator Net mode: forward pass every tick (1kHz)
+        // Uses current pos_err/vel + stored history (10ms, 20ms ago)
+        rd_.q_desired = target_pos;
         computeActuatorNetTorques();
         torque_rl_ = cached_anet_torque_;
     } else {
-        // PD mode: recompute torque every tick at 1 kHz
+        // PD mode: recompute torque every tick at 1kHz
+        rd_.q_desired = target_pos;
         for (int i = 0; i < MODEL_DOF; i++) {
-            torque_rl_(i) = kp_p73_(i) * (rd_.q_desired(i) - q_noise_(i) + encoder_bias_(i))
-                          - kd_p73_(i) * q_vel_noise_(i);
+            torque_rl_(i) = kp_p73_(i) * (rd_.q_desired(i) - q_noise_(i)) - kd_p73_(i) * q_vel_noise_(i);
         }
     }
 
@@ -924,9 +875,9 @@ void CustomController::computeActuatorNetTorques()
         cached_anet_torque_(i) = torque;
     }
 
-    // --- 3. WaistYaw (joint 12): PD control with PACE encoder bias ---
+    // --- 3. WaistYaw (joint 12): PD control ---
     // Clamping is performed in motor space at the top of computeFast().
-    cached_anet_torque_(12) = kp_p73_(12) * (q_default_p73_(12) - q_noise_(12) + encoder_bias_(12))
+    cached_anet_torque_(12) = kp_p73_(12) * (q_default_p73_(12) - q_noise_(12))
                             - kd_p73_(12) * q_vel_noise_(12);
 }
 

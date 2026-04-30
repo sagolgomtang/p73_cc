@@ -3,7 +3,7 @@
 
 #include "p73_lib/robot_data.h"
 #include "p73_lib/4bar_jac_func.h"
-#include "wholebody_functions.h"
+// #include "wholebody_functions.h"
 #include "onnxruntime_cxx_api.h"
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
@@ -96,7 +96,7 @@ public:
 
     //////////////////////// processNoise (TOCABI sim2real pattern) ////////////////////////
     // is_on_robot_: true=real robot (direct sensor + LPF), false=sim (noise + numerical diff + LPF)
-    bool is_on_robot_ = true;
+    bool is_on_robot_ = false;
 
     // Filtered/noised joint state — used by BOTH obs and PD (matching TOCABI)
     Matrix<double, MODEL_DOF, 1> q_noise_;       // joint position (noised in sim, direct on robot)

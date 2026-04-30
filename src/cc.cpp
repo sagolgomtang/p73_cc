@@ -60,8 +60,8 @@ void CustomController::initVariable()
                1536.0, 937.5, 625.0, 570.08, 463.896, 463.788,
                576.0;
 
-    kd_p73_ << 76.8, 37.5, 12.5, 28.504, 16.0, 16.0,
-               76.8, 37.5, 12.5, 28.504, 16.0, 16.0,
+    kd_p73_ << 76.8, 37.5, 12.5, 28.504, 16.0, 5.3,
+               76.8, 37.5, 12.5, 28.504, 16.0, 5.3,
                19.2;
 
     torque_bound_p73_ << 352.0, 220.0, 95.0, 220.0, 95.0, 95.0,
@@ -549,7 +549,8 @@ void CustomController::computeFast()
     //               back to MuJoCo reproduces the real motor-limit envelope
     //               (nonlinear, configuration-dependent) at the joint level.
     if (is_on_robot_) {
-        VectorQd torque_motor = WBC::JointTorqueToMotorTorque(rd_, torque_rl_);
+        // VectorQd torque_motor = WBC::JointTorqueToMotorTorque(rd_, torque_rl_);
+        VectorQd torque_motor = rd_.four_bar_Jaco_.transpose() * torque_rl_;
         for (int i = 0; i < MODEL_DOF; i++) {
             torque_motor(i) = DyrosMath::minmax_cut(torque_motor(i), -torque_bound_p73_(i), torque_bound_p73_(i));
         }

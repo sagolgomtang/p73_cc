@@ -304,6 +304,116 @@ def plot_motor_torque(t, d, out):
     return path
 
 
+def plot_torque_des_vs_meas_joint(t, d, out):
+    """Per-joint overlay: commanded (PD output) vs measured (ECAT readback) — joint side."""
+    cols_des  = [f"tau_joint_{i}" for i in range(13)]
+    cols_meas = [f"tau_meas_joint_{i}" for i in range(13)]
+    if not any(c in d for c in cols_meas):
+        return None
+    n = 13; ncols = 3; nrows = math.ceil(n / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 3.5 * nrows), sharex=True)
+    axes = np.array(axes).reshape(-1)
+    fig.suptitle("Torque (Joint side): Desired (blue) vs Measured (red)", fontsize=14)
+    for i in range(n):
+        ax = axes[i]
+        if cols_des[i] in d:
+            ax.plot(t, d[cols_des[i]], lw=0.8, label="desired", color="tab:blue")
+        if cols_meas[i] in d:
+            ax.plot(t, d[cols_meas[i]], lw=0.8, label="measured", color="tab:red", alpha=0.8)
+        ax.set_title(joint_label("tau_joint", i)); ax.grid(True, alpha=0.3)
+        ax.set_xlabel("time [s]"); ax.legend(fontsize=7)
+    for i in range(n, len(axes)):
+        axes[i].axis("off")
+    fig.tight_layout(); path = out / "06c_torque_joint_des_vs_meas.png"; fig.savefig(path, dpi=150); plt.close(fig)
+    return path
+
+
+def plot_torque_des_vs_meas_motor(t, d, out):
+    """Per-joint overlay: commanded vs measured — motor side (after 4-bar). Real robot only."""
+    cols_des  = [f"tau_motor_{i}" for i in range(13)]
+    cols_meas = [f"tau_meas_motor_{i}" for i in range(13)]
+    if not any(c in d for c in cols_meas):
+        return None
+    has_data = any(np.any(np.abs(d[c]) > 1e-9) for c in cols_meas if c in d)
+    if not has_data:
+        return None
+    n = 13; ncols = 3; nrows = math.ceil(n / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 3.5 * nrows), sharex=True)
+    axes = np.array(axes).reshape(-1)
+    fig.suptitle("Torque (Motor side, post-4bar): Desired (orange) vs Measured (purple)", fontsize=14)
+    for i in range(n):
+        ax = axes[i]
+        if cols_des[i] in d:
+            ax.plot(t, d[cols_des[i]], lw=0.8, label="desired", color="tab:orange")
+        if cols_meas[i] in d:
+            ax.plot(t, d[cols_meas[i]], lw=0.8, label="measured", color="tab:purple", alpha=0.8)
+        ax.set_title(joint_label("tau_motor", i)); ax.grid(True, alpha=0.3)
+        ax.set_xlabel("time [s]"); ax.legend(fontsize=7)
+    for i in range(n, len(axes)):
+        axes[i].axis("off")
+    fig.tight_layout(); path = out / "06d_torque_motor_des_vs_meas.png"; fig.savefig(path, dpi=150); plt.close(fig)
+    return path
+
+
+def plot_pos_des_vs_meas(t, d, out):
+    """Per-joint overlay: q_des (commanded) vs q_raw (measured)."""
+    cols_des  = [f"q_des_{i}" for i in range(13)]
+    cols_meas = [f"q_raw_{i}" for i in range(13)]
+    if not any(c in d for c in cols_des):
+        return None
+    n = 13; ncols = 3; nrows = math.ceil(n / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 3.5 * nrows), sharex=True)
+    axes = np.array(axes).reshape(-1)
+    fig.suptitle("Joint Position: Desired (blue, dashed) vs Measured (red)", fontsize=14)
+    for i in range(n):
+        ax = axes[i]
+        if cols_des[i] in d:
+            ax.plot(t, d[cols_des[i]], lw=1.0, ls="--", label="q_des", color="tab:blue")
+        if cols_meas[i] in d:
+            ax.plot(t, d[cols_meas[i]], lw=0.8, label="q_meas", color="tab:red", alpha=0.8)
+        ax.set_title(joint_label("q", i)); ax.grid(True, alpha=0.3)
+        ax.set_xlabel("time [s]"); ax.legend(fontsize=7)
+    for i in range(n, len(axes)):
+        axes[i].axis("off")
+    fig.tight_layout(); path = out / "02b_joint_pos_des_vs_meas.png"; fig.savefig(path, dpi=150); plt.close(fig)
+    return path
+
+
+def plot_actuator_net_inputs(t, d, out):
+    """Inputs/output for actuator-net training, per joint (12 leg joints).
+
+    Shows joint_position_error = q_des - q_meas, qdot, and tau_meas_joint
+    for each leg joint — the exact triplet used by walk-these-ways style
+    actuator nets.
+    """
+    if not any(f"tau_meas_joint_{i}" in d for i in range(12)):
+        return None
+    n = 12; ncols = 3; nrows = math.ceil(n / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 3.5 * nrows), sharex=True)
+    axes = np.array(axes).reshape(-1)
+    fig.suptitle("Actuator Net Inputs/Output  —  pos_err (blue), qdot (green), tau_meas (red)", fontsize=14)
+    for i in range(n):
+        ax = axes[i]
+        if f"q_des_{i}" in d and f"q_raw_{i}" in d:
+            pos_err = d[f"q_des_{i}"] - d[f"q_raw_{i}"]
+            ax.plot(t, pos_err, lw=0.8, label="pos_err [rad]", color="tab:blue")
+        if f"qdot_{i}" in d:
+            ax2 = ax.twinx()
+            ax2.plot(t, d[f"qdot_{i}"], lw=0.8, label="qdot [rad/s]", color="tab:green", alpha=0.7)
+            ax2.set_ylabel("qdot", fontsize=8, color="tab:green")
+        if f"tau_meas_joint_{i}" in d:
+            ax3 = ax.twinx()
+            ax3.spines.right.set_position(("axes", 1.12))
+            ax3.plot(t, d[f"tau_meas_joint_{i}"], lw=0.8, label="tau_meas [N·m]", color="tab:red", alpha=0.7)
+            ax3.set_ylabel("tau", fontsize=8, color="tab:red")
+        ax.set_title(joint_label("joint", i)); ax.grid(True, alpha=0.3)
+        ax.set_xlabel("time [s]"); ax.legend(fontsize=6, loc="upper left")
+    for i in range(n, len(axes)):
+        axes[i].axis("off")
+    fig.tight_layout(); path = out / "09_actuator_net_inputs.png"; fig.savefig(path, dpi=150); plt.close(fig)
+    return path
+
+
 def plot_obs_frame(t, d, out):
     obs_cols = [f"obs_{i}" for i in range(47) if f"obs_{i}" in d]
     if not obs_cols:
@@ -517,6 +627,56 @@ def compare_torque(ts, ds, tr, dr, out):
     return path
 
 
+def compare_torque_meas(ts, ds, tr, dr, out):
+    """Compare measured torque (real ECAT) vs sim commanded torque, since sim has no measured."""
+    cols_meas = [f"tau_meas_joint_{i}" for i in range(13)]
+    if not any(c in dr for c in cols_meas):
+        return None
+    n = 13; ncols = 3; nrows = math.ceil(n / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 3.5 * nrows), sharex=True)
+    axes = np.array(axes).reshape(-1)
+    fig.suptitle("Torque (joint side, measured)  —  sim cmd (blue) vs real measured (red)", fontsize=14)
+    for i in range(n):
+        ax = axes[i]
+        # sim has only commanded; show tau_joint as proxy
+        if f"tau_joint_{i}" in ds:
+            ax.plot(ts, ds[f"tau_joint_{i}"], lw=0.7, color=SIM_COLOR, alpha=SIM_ALPHA, label="sim cmd")
+        if f"tau_meas_joint_{i}" in dr:
+            ax.plot(tr, dr[f"tau_meas_joint_{i}"], lw=0.7, color=REAL_COLOR, alpha=REAL_ALPHA, label="real meas")
+        ax.set_title(joint_label("tau", i)); ax.grid(True, alpha=0.3)
+        ax.set_xlabel("time [s]"); _dual_legend(ax)
+    for i in range(n, len(axes)):
+        axes[i].axis("off")
+    fig.tight_layout(); path = out / "06b_compare_torque_meas.png"; fig.savefig(path, dpi=150); plt.close(fig)
+    return path
+
+
+def compare_pos_des_vs_meas(ts, ds, tr, dr, out):
+    """Per-joint q_des vs q_raw tracking — sim and real overlaid."""
+    if not any(f"q_des_{i}" in ds or f"q_des_{i}" in dr for i in range(13)):
+        return None
+    n = 13; ncols = 3; nrows = math.ceil(n / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 3.5 * nrows), sharex=True)
+    axes = np.array(axes).reshape(-1)
+    fig.suptitle("Joint Pos Tracking (q_des dashed, q_meas solid)  —  sim (blue) vs real (red)", fontsize=14)
+    for i in range(n):
+        ax = axes[i]
+        if f"q_des_{i}" in ds:
+            ax.plot(ts, ds[f"q_des_{i}"], lw=0.7, ls="--", color=SIM_COLOR, alpha=SIM_ALPHA)
+        if f"q_raw_{i}" in ds:
+            ax.plot(ts, ds[f"q_raw_{i}"], lw=0.7, color=SIM_COLOR, alpha=SIM_ALPHA)
+        if f"q_des_{i}" in dr:
+            ax.plot(tr, dr[f"q_des_{i}"], lw=0.7, ls="--", color=REAL_COLOR, alpha=REAL_ALPHA)
+        if f"q_raw_{i}" in dr:
+            ax.plot(tr, dr[f"q_raw_{i}"], lw=0.7, color=REAL_COLOR, alpha=REAL_ALPHA)
+        ax.set_title(joint_label("q", i)); ax.grid(True, alpha=0.3)
+        ax.set_xlabel("time [s]"); _dual_legend(ax)
+    for i in range(n, len(axes)):
+        axes[i].axis("off")
+    fig.tight_layout(); path = out / "02b_compare_pos_des_vs_meas.png"; fig.savefig(path, dpi=150); plt.close(fig)
+    return path
+
+
 def compare_rmse_summary(ts, ds, tr, dr, out):
     """Bar chart of per-signal RMSE between sim and real (interpolated to common time)."""
     t_end = min(ts[-1], tr[-1])
@@ -529,6 +689,8 @@ def compare_rmse_summary(ts, ds, tr, dr, out):
         "qdot": [f"qdot_{i}" for i in range(13)],
         "action": [f"action_{i}" for i in range(12)],
         "tau_joint": [f"tau_joint_{i}" for i in range(13)],
+        "tau_meas_joint": [f"tau_meas_joint_{i}" for i in range(13)],
+        "q_des": [f"q_des_{i}" for i in range(13)],
     }
 
     group_rmse = {}
@@ -613,8 +775,16 @@ def run_compare(path1: Path, path2: Path, show: bool = False):
                             "05_compare_actions.png", out_dir, n_joints=12)
     if p: saved.append(p)
 
-    # Torque
+    # Joint pos tracking (q_des vs q_raw)
+    p = compare_pos_des_vs_meas(ts, ds, tr, dr, out_dir)
+    if p: saved.append(p)
+
+    # Torque (commanded)
     p = compare_torque(ts, ds, tr, dr, out_dir)
+    if p: saved.append(p)
+
+    # Torque (measured) — only valid if real CSV has tau_meas_joint columns
+    p = compare_torque_meas(ts, ds, tr, dr, out_dir)
     if p: saved.append(p)
 
     # Obs frame overview
@@ -653,11 +823,15 @@ def plot_csv(csv_path: Path, show: bool = False) -> Path:
         lambda: plot_imu(t, data, out_dir),
         lambda: plot_vel_tracking(t, data, out_dir),
         lambda: plot_joint_group(t, data, "q_raw", "Joint Position (raw)", "02_joint_pos_raw.png", out_dir),
+        lambda: plot_pos_des_vs_meas(t, data, out_dir),
         lambda: plot_joint_group(t, data, "qdot", "Joint Velocity", "03_joint_vel.png", out_dir),
         lambda: plot_joint_group(t, data, "action", "RL Actions", "04_actions.png", out_dir, n_joints=12),
         lambda: plot_joint_pos_vs_action(t, data, out_dir),
         lambda: plot_torque_comparison(t, data, out_dir),
         lambda: plot_motor_torque(t, data, out_dir),
+        lambda: plot_torque_des_vs_meas_joint(t, data, out_dir),
+        lambda: plot_torque_des_vs_meas_motor(t, data, out_dir),
+        lambda: plot_actuator_net_inputs(t, data, out_dir),
         lambda: plot_obs_frame(t, data, out_dir),
     ]:
         p = fn()

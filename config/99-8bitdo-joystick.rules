@@ -1,0 +1,33 @@
+# udev rule for 8BitDo Ultimate 2 Wireless Controller (2.4 GHz dongle).
+#
+# IMPORTANT: VID/PID values below are placeholders matching the typical
+# "8BitDo Ultimate 2" enumeration in XInput mode. The install script
+# (install_joy_autostart.sh) will auto-detect the actual VID/PID at install
+# time (via `lsusb`) and rewrite this file. So you usually do not need to
+# touch this file by hand.
+#
+# Effect when the dongle is plugged in:
+#   1. /dev/input/p73_joystick symlink is created (stable name regardless of jsN)
+#   2. /dev/input/jsN gets MODE=0660 GROUP=input  (no sudo needed for `input` group)
+#   3. systemd unit p73-joy-teleop@local.service is started (auto teleop launch)
+#
+# When unplugged:
+#   - BindsTo= in the systemd unit causes it to stop automatically.
+
+# Match by VID only so any 8BitDo product on the dongle works (model may report
+# slightly different PID across firmware versions).
+ACTION=="add",    SUBSYSTEMS=="usb", ATTRS{idVendor}=="2dc8", \
+  TAG+="systemd", ENV{SYSTEMD_WANTS}+="p73-joy-teleop@local.service"
+
+# Permissions + stable symlink (joystick interface)
+KERNEL=="js[0-9]*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="2dc8", \
+  MODE="0660", GROUP="input", SYMLINK+="input/p73_joystick"
+
+# Permissions on the matching event device too (some libs use evdev)
+KERNEL=="event[0-9]*", SUBSYSTEMS=="usb", ATTRS{idVendor}=="2dc8", \
+  MODE="0660", GROUP="input"
+
+# Stop the teleop service when the dongle is unplugged (publishes one final
+# zero-velocity Twist via the Python atexit handler).
+ACTION=="remove", SUBSYSTEMS=="usb", ATTRS{idVendor}=="2dc8", \
+  RUN+="/bin/systemctl --no-block stop p73-joy-teleop@local.service"

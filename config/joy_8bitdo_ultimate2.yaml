@@ -1,0 +1,54 @@
+# 8BitDo Ultimate 2 Wireless (XInput / generic gamepad mode via 2.4GHz dongle).
+#
+# Verify with:
+#   jstest /dev/input/js0
+#   ros2 run joy joy_node --ros-args -p device_id:=0
+#   ros2 topic echo /joy
+#
+# If the mapping is wrong (e.g. you press A and see a different index light up),
+# only the indices/inverts here need to change. No code change needed.
+
+p73_joy_teleop:
+  ros__parameters:
+    # ---- Axes (typical XInput layout) ----
+    axis_vx: 1            # left stick Y
+    axis_vy: 0            # left stick X
+    axis_wz: 3            # right stick X
+    invert_vx: false      # stick up   = +vx (forward)
+    invert_vy: true       # stick left = +vy (left strafe)
+    invert_wz: true       # stick left = +wz (CCW)
+
+    # ---- Buttons (typical XInput layout) ----
+    button_push: 0        # A  -> push_event (random push, sim)
+    button_reset: 3       # Y  -> reset scale + clear estop
+    button_estop: 7       # Start -> toggle emergency stop
+    button_deadman: 4     # LB -> deadman (only required if require_deadman=true)
+    button_scale_up: 5    # RB -> scale +0.1
+    button_scale_down: 6  # Back/Select -> scale -0.1
+
+    # ---- Scaling / safety ----
+    max_vx: 1.0
+    max_vy: 0.5
+    max_wz: 1.0
+    deadzone: 0.10
+    expo: 0.30                  # 0.0 = linear, ~0.3 = soft middle, more on edges
+    require_deadman: false      # set true on real robot for safety
+    scale_step: 0.10
+    scale_min: 0.20
+    scale_max: 1.50
+
+    # ---- Stream behavior ----
+    publish_rate_hz: 50.0
+    joy_timeout_s: 0.5          # if /joy stops arriving for this long -> publish 0
+    push_repeat_block_s: 0.30   # debounce for the push button
+
+
+# joy_node parameters (used by the launch file).
+# device_name is preferred over device_id since /dev/input/jsN can change.
+joy_node:
+  ros__parameters:
+    device_name: "8BitDo Ultimate 2 Wireless Controller"
+    deadzone: 0.0               # we apply our own deadzone in p73_joy_teleop
+    autorepeat_rate: 0.0        # we re-publish at our own rate
+    sticky_buttons: false
+    coalesce_interval: 0.01

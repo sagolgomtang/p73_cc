@@ -16,6 +16,14 @@
   <depend>p73_msgs</depend>
   <depend>br_driver</depend>
 
+  <!-- Joystick teleop runtime deps (Python nodes installed by this package) -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>joy</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

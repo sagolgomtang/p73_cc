@@ -42,27 +42,6 @@ public:
     void feedforwardPolicy();
     Vector3d quatRotateInverse(const Quaterniond &q, const Vector3d &v);
 
-    //////////////////////// Joint Order Permutation ////////////////////////
-    // IsaacLab _LOWER_JOINT_NAMES order (12):
-    //   L_HipRoll, L_HipPitch, L_HipYaw, L_Knee, L_AnklePitch, L_AnkleRoll,
-    //   R_HipRoll, R_HipPitch, R_HipYaw, R_Knee, R_AnklePitch, R_AnkleRoll
-    //
-    // P73 JOINT_NAME order (13):
-    //   L_HipYaw, L_HipRoll, L_HipPitch, L_Knee, L_AnklePitch, L_AnkleRoll,
-    //   R_HipYaw, R_HipRoll, R_HipPitch, R_Knee, R_AnklePitch, R_AnkleRoll,
-    //   WaistYaw
-    //
-    // kP73ToIsaac[p73_idx] = isaac_idx  (for building obs in IsaacLab order)
-    // kIsaacToP73[isaac_idx] = p73_idx  (for applying actions to P73 joints)
-    static constexpr std::array<int, 12> kP73ToIsaac = {
-        2, 0, 1, 3, 4, 5,   // L leg
-        8, 6, 7, 9, 10, 11  // R leg
-    };
-    static constexpr std::array<int, 12> kIsaacToP73 = {
-        1, 2, 0, 3, 4, 5,   // L leg
-        7, 8, 6, 9, 10, 11  // R leg
-    };
-
     //////////////////////// ONNX Runtime ////////////////////////
     size_t input_number, output_number;
     std::vector<std::string> input_names, output_names;
@@ -111,22 +90,19 @@ public:
     static constexpr double lpf_cutoff_hz_ = 20.0;  // TOCABI uses 4Hz LPF for q_dot
 
     //////////////////////// Robot State ////////////////////////
-    // Default joint positions in P73 order (from p73_walker.py)
+    // Default joint positions. P73 JOINT_NAME order matches IsaacLab
+    // _LOWER_JOINT_NAMES order (HipRoll, HipPitch, HipYaw, ...), so a single
+    // 13D vector serves both lower-body obs (head<12>()) and full-body PD.
     Matrix<double, MODEL_DOF, 1> q_default_p73_;
-
-    // Default joint positions in IsaacLab lower body order (12)
-    Matrix<double, 12, 1> q_default_isaac_;
 
     // RL action (IsaacLab order, 12D)
     Matrix<double, num_action, 1> rl_action_;
     Matrix<double, num_action, 1> last_action_processed_;  // raw * scale
 
-    // Joint position limits in P73 order (for q_des clamping, lower 12 only)
-    Matrix<double, 12, 1> q_limit_lower_p73_, q_limit_upper_p73_;
-
-    // PD gains in P73 order (13D, including WaistYaw)
-    VectorQd kp_p73_, kd_p73_;
-    VectorQd torque_bound_p73_;
+    // PD gains, joint limits, and motor torque bounds are loaded once by
+    // state_estimator (from setting_*_PDgain.yaml + URDF) into rd_.Kp_j /
+    // rd_.Kd_j / rd_.q_min / rd_.q_max / rd_.torque_limit. cc.cpp reads them
+    // directly so RL mode and task_modes 0~4 stay in sync.
     VectorQd torque_rl_;
     VectorQd torque_init_;
     VectorQd q_init_;
@@ -162,41 +138,6 @@ public:
     double value_ = 0.0;
 
     string weight_dir_;
-
-    //////////////////////// Actuator Net ////////////////////////
-    // Per-joint neural network replacing PD control for lower body (12 joints).
-    // Network: Linear(6,32)->Softsign->Linear(32,32)->Softsign->Linear(32,32)->Softsign->Linear(32,1)
-    // Input: [pos_err_t, pos_err_{t-1}, pos_err_{t-2}, vel_t, vel_{t-1}, vel_{t-2}]
-    // Output: motor current (A) -> x100 -> torque (Nm)
-    // Computes at 50Hz (policy rate), cached for 1kHz main loop.
-    bool use_actuator_net_ = false;
-
-    struct ANetWeights {
-        Eigen::Matrix<double, 32, 6>  W0;
-        Eigen::Matrix<double, 32, 1>  b0;
-        Eigen::Matrix<double, 32, 32> W1;
-        Eigen::Matrix<double, 32, 1>  b1;
-        Eigen::Matrix<double, 32, 32> W2;
-        Eigen::Matrix<double, 32, 1>  b2;
-        Eigen::Matrix<double, 1, 32>  W3;
-        double b3;
-    };
-    std::array<ANetWeights, 12> anet_weights_;
-
-    // History buffers: [joint_idx][slot], slot: 0=~10ms ago, 1=~20ms ago
-    // Updated at 100Hz (anet_dt_). Current values are computed fresh every tick.
-    std::array<std::array<double, 2>, 12> anet_pos_err_hist_{};
-    std::array<std::array<double, 2>, 12> anet_vel_hist_{};
-    bool anet_hist_initialized_ = false;
-
-    VectorQd cached_anet_torque_;
-
-    static constexpr double anet_output_scale_ = 100.0;  // motor current (A) -> torque (Nm)
-    static constexpr double anet_dt_ = 0.01;              // history update interval (10ms, 100Hz)
-
-    void loadActuatorNets();
-    void computeActuatorNetTorques();
-    double anetForward(int joint_idx, const Eigen::Matrix<double, 6, 1>& input);
 
     //////////////////////// ROS2 Velocity Command Subscriber ////////////////////////
     // Uses dc_.node_ (main controller node) to share its DDS participant,

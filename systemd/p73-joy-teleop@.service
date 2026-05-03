@@ -1,0 +1,26 @@
+[Unit]
+Description=P73 Joystick Teleop (mode=%i)
+# %i is the instance name: "local" (dongle plugged into THIS Linux machine)
+# or "udp" (joystick state arriving from a Windows machine over UDP/Tailscale).
+#
+# For the "local" instance: bind lifecycle to the joystick device symlink
+# created by the udev rule, so the service stops cleanly on unplug.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__P73_USER__
+Group=__P73_USER__
+# Source ROS + workspace, then launch the appropriate file.
+# Both env vars are set by install_joy_autostart.sh at install time.
+EnvironmentFile=/etc/p73_joy/p73_joy.env
+ExecStart=/bin/bash -lc 'source "$ROS_SETUP" && source "$WS_SETUP" && exec ros2 launch p73_cc joy_teleop_%i.launch.py'
+Restart=on-failure
+RestartSec=2
+# Send a final 0-velocity Twist on shutdown via the python publisher's atexit
+KillSignal=SIGINT
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

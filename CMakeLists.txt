@@ -69,6 +69,29 @@ install(DIRECTORY policy/
   DESTINATION share/${PROJECT_NAME}/policy
 )
 
+# --- joystick teleop assets ---
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch
+)
+install(DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
+)
+install(DIRECTORY systemd/
+  DESTINATION share/${PROJECT_NAME}/systemd
+)
+# Python nodes that the launch files reference via package="p73_cc".
+install(PROGRAMS
+  scripts/p73_joy_teleop.py
+  scripts/joy_udp_receiver.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+# Helper shell scripts (also kept in source tree; users typically run from there).
+install(PROGRAMS
+  scripts/install_joy_autostart.sh
+  scripts/uninstall_joy_autostart.sh
+  DESTINATION share/${PROJECT_NAME}/scripts
+)
+
 # Export for find_package(p73_cc)
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME} onnxruntime)

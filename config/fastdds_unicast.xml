@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FastDDS profile for ROS2 over Tailscale.
+
+  WHEN YOU NEED THIS:
+    * Workstation <-> Windows laptop (or anything across networks) where
+      multicast can't reach.
+  WHEN YOU DO NOT NEED THIS:
+    * Real robot computer running everything locally (joy + cc + controller
+      all on the same box). Don't apply this profile there — leave the system
+      defaults alone, and don't bother installing/logging into Tailscale.
+    * Two machines on the same physical LAN/subnet (multicast just works).
+
+  Why: Tailscale provides a virtual L3 network across machines that may live
+  on different physical LANs (home, lab, etc). Standard ROS2 multicast
+  discovery doesn't traverse Tailscale, so when you DO want cross-network
+  ROS2, configure FastDDS with UNICAST initial peers instead. Each machine
+  just needs the Tailscale IPs of the others listed below.
+
+  Apply by exporting (and re-running install_joy_autostart.sh with
+  --fastrtps-profiles /full/path/to/fastdds_unicast.xml):
+    export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+    export FASTRTPS_DEFAULT_PROFILES_FILE=/path/to/fastdds_unicast.xml
+    # ROS_DOMAIN_ID: only set if your other ROS2 nodes use a non-default value.
+
+  IMPORTANT: edit the <address> entries below to match your `tailscale ip -4`
+  outputs on each machine. Keep ALL peers in the list on EVERY machine —
+  it's safe to include yourself.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+
+  <participant profile_name="participant_default_profile" is_default_profile="true">
+    <rtps>
+      <builtin>
+        <discovery_config>
+          <!-- Disable multicast announcements; we discover via initial peers. -->
+          <leaseDuration>
+            <sec>20</sec>
+          </leaseDuration>
+          <leaseAnnouncement>
+            <sec>3</sec>
+          </leaseAnnouncement>
+        </discovery_config>
+
+        <metatrafficUnicastLocatorList>
+          <locator>
+            <udpv4/>
+          </locator>
+        </metatrafficUnicastLocatorList>
+
+        <initialPeersList>
+          <!-- Workstation Tailscale IP (EDIT) -->
+          <locator>
+            <udpv4>
+              <address>100.0.0.1</address>
+            </udpv4>
+          </locator>
+          <!-- Real robot computer Tailscale IP (EDIT) -->
+          <locator>
+            <udpv4>
+              <address>100.0.0.2</address>
+            </udpv4>
+          </locator>
+          <!-- Add more peers below as needed (laptop running ROS2, etc.). -->
+        </initialPeersList>
+      </builtin>
+    </rtps>
+  </participant>
+
+</profiles>

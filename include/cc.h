@@ -96,10 +96,12 @@ public:
     Matrix<double, num_action, 1> rl_action_;
     Matrix<double, num_action, 1> last_action_processed_;  // raw * scale
 
-    // PD gains, joint limits, and motor torque bounds are loaded once by
-    // state_estimator (from setting_*_PDgain.yaml + URDF) into rd_.Kp_j /
-    // rd_.Kd_j / rd_.q_min / rd_.q_max / rd_.torque_limit. cc.cpp reads them
-    // directly so RL mode and task_modes 0~4 stay in sync.
+    // Custom PD gains for RL policy (self-contained in cc.cpp, not from yaml).
+    // These match the stiffness/damping used during IsaacLab training.
+    VectorQd kp_p73_, kd_p73_;
+    VectorQd torque_bound_p73_;
+    Matrix<double, 12, 1> q_limit_lower_p73_, q_limit_upper_p73_;
+
     VectorQd torque_rl_;
     VectorQd torque_init_;
     VectorQd q_init_;

@@ -17,7 +17,7 @@
 #   piene ALL=(ALL) NOPASSWD: /usr/bin/systemctl start p73-joy-teleop@udp.service, /usr/bin/systemctl stop p73-joy-teleop@udp.service
 # (replace `piene` with your username)
 
-set -u
+set -e
 
 SERVICE="p73-joy-teleop@udp.service"
 TELEOP_PY="${HOME}/ros2_ws/src/p73_cc/scripts/walker_teleop.py"

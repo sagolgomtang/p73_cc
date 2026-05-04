@@ -53,6 +53,23 @@ void CustomController::initVariable()
                        0.0, -0.18, 0.0, -0.35, 0.17, 0.0,
                        0.0;
 
+    kp_p73_ << 1536.0, 937.5, 625.0, 570.08, 463.896, 463.788,
+               1536.0, 937.5, 625.0, 570.08, 463.896, 463.788,
+               576.0;
+
+    kd_p73_ << 76.8, 37.5, 12.5, 28.504, 16.0, 5.3,
+               76.8, 37.5, 12.5, 28.504, 16.0, 5.3,
+               19.2;
+
+    torque_bound_p73_ << 352.0, 220.0, 95.0, 220.0, 95.0, 95.0,
+                          352.0, 220.0, 95.0, 220.0, 95.0, 95.0,
+                          152.0;
+
+    q_limit_lower_p73_ << -0.58, -1.57, -0.78, 0.0, -1.05, -0.42,
+                           -0.58, -2.09, -0.78, -2.56, -0.7, -0.42;
+    q_limit_upper_p73_ << 0.3, 2.09, 0.78, 2.56, 0.7, 0.42,
+                           0.3, 1.57, 0.78, 0.0, 1.05, 0.42;
+
     rl_action_.setZero();
     last_action_processed_.setZero();
     torque_rl_.setZero();
@@ -467,7 +484,7 @@ void CustomController::computeFast()
         double dq = rl_action_(i) * action_scale_;
         dq = DyrosMath::minmax_cut(dq, -1.0, 1.0);
         target_pos(i) = q_default_p73_(i) + dq;
-        target_pos(i) = DyrosMath::minmax_cut(target_pos(i), rd_.q_min(i), rd_.q_max(i));
+        target_pos(i) = DyrosMath::minmax_cut(target_pos(i), q_limit_lower_p73_(i), q_limit_upper_p73_(i));
     }
 
     // Position-level spline transition for first 100ms (PD ramp-in, always)
@@ -477,18 +494,18 @@ void CustomController::computeFast()
         }
         // During ramp-in: always use PD control for safety
         for (int i = 0; i < MODEL_DOF; i++) {
-            torque_rl_(i) = rd_.Kp_j[i] * (rd_.q_desired(i) - q_noise_(i)) - rd_.Kd_j[i] * q_vel_noise_(i);
+            torque_rl_(i) = kp_p73_(i) * (rd_.q_desired(i) - q_noise_(i)) - kd_p73_(i) * q_vel_noise_(i);
         }
     } else {
         // PD mode: recompute torque every tick at 1kHz
         rd_.q_desired = target_pos;
         for (int i = 0; i < MODEL_DOF; i++) {
-            torque_rl_(i) = rd_.Kp_j[i] * (rd_.q_desired(i) - q_noise_(i)) - rd_.Kd_j[i] * q_vel_noise_(i);
+            torque_rl_(i) = kp_p73_(i) * (rd_.q_desired(i) - q_noise_(i)) - kd_p73_(i) * q_vel_noise_(i);
         }
     }
 
-    // rd_.torque_limit (loaded from yaml `torque_limit` by state_estimator) is
-    // the MOTOR-side limit. The clamp must happen on the motor-space torque
+    // torque_bound_p73_ is the MOTOR-side limit. The clamp must happen on the
+    // motor-space torque
     // (τ_m = J^T τ_j), not on joint-space torque.
     //
     //   Real robot: rd_.four_bar_Jaco_ is populated by state_estimator; map
@@ -506,7 +523,7 @@ void CustomController::computeFast()
         // VectorQd torque_motor = WBC::JointTorqueToMotorTorque(rd_, torque_rl_);
         VectorQd torque_motor = rd_.four_bar_Jaco_.transpose() * torque_rl_;
         for (int i = 0; i < MODEL_DOF; i++) {
-            torque_motor(i) = DyrosMath::minmax_cut(torque_motor(i), -rd_.torque_limit(i), rd_.torque_limit(i));
+            torque_motor(i) = DyrosMath::minmax_cut(torque_motor(i), -torque_bound_p73_(i), torque_bound_p73_(i));
         }
         rd_.torque_desired = torque_motor;
     } else {
@@ -520,7 +537,7 @@ void CustomController::computeFast()
 
         VectorQd torque_motor = J.transpose() * torque_rl_;
         for (int i = 0; i < MODEL_DOF; i++) {
-            torque_motor(i) = DyrosMath::minmax_cut(torque_motor(i), -rd_.torque_limit(i), rd_.torque_limit(i));
+            torque_motor(i) = DyrosMath::minmax_cut(torque_motor(i), -torque_bound_p73_(i), torque_bound_p73_(i));
         }
         // τ_j' = J^{-T} τ_m_clamped — joint-space torque that realizes the
         // clamped motor torque through the 4-bar.

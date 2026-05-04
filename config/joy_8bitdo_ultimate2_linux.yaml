@@ -1,0 +1,56 @@
+# 8BitDo Ultimate 2 Wireless — LINUX (joy_node / SDL2) mapping.
+#
+# Linux kernel joystick driver maps axes differently from Windows pygame:
+#   - axes[2] is often LT (trigger), pushing RX to axes[3] and RY to axes[4]
+#   - Stick polarity may be inverted compared to Windows XInput/pygame
+#
+# This file is used by joy_teleop_local.launch.py (Linux dongle directly).
+# For Windows (UDP bridge), see joy_8bitdo_ultimate2.yaml.
+#
+# Verify with:
+#   ros2 topic echo /joy   (move one stick at a time, note which axes[N] changes)
+
+p73_joy_teleop:
+  ros__parameters:
+    # ---- Axes (Linux SDL2 / kernel joystick) ----
+    axis_vx: 1            # left stick Y  (axes[1])
+    axis_vy: 0            # left stick X  (axes[0])
+    axis_wz: 3            # right stick X (axes[3]) — on Windows this is 2
+    invert_vx: false      # Linux: stick up = +value → +vx (forward). No invert needed.
+    invert_vy: false      # Linux: stick left = +value → +vy (left strafe). No invert needed.
+    invert_wz: false      # Linux: stick left = +1.0 → +wz (CCW). No invert needed.
+
+    # ---- Buttons (same as Windows, XInput layout) ----
+    button_push: 0        # A  -> push_event (random push, sim)
+    button_viz_toggle: 2  # X  -> viz_toggle
+    button_reset: 3       # Y  -> reset scale + clear estop
+    button_estop: 7       # Start -> toggle emergency stop
+    button_deadman: 4     # LB -> deadman (only required if require_deadman=true)
+    button_scale_up: 5    # RB -> scale +0.1
+    button_scale_down: 6  # Back/Select -> scale -0.1
+
+    # ---- Scaling / safety ----
+    max_vx: 1.0
+    max_vy: 0.5
+    max_wz: 1.0
+    deadzone: 0.10
+    expo: 0.30
+    require_deadman: true       # REAL ROBOT: deadman enabled for safety
+    scale_step: 0.10
+    scale_min: 0.20
+    scale_max: 1.50
+
+    # ---- Stream behavior ----
+    publish_rate_hz: 50.0
+    joy_timeout_s: 0.5
+    push_repeat_block_s: 0.30
+
+
+# joy_node parameters
+joy_node:
+  ros__parameters:
+    device_name: "8BitDo Ultimate 2 Wireless Controller"
+    deadzone: 0.0
+    autorepeat_rate: 0.0
+    sticky_buttons: false
+    coalesce_interval: 0.01

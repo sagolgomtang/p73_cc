@@ -23,7 +23,8 @@ from launch_ros.actions import Node
 
 def generate_launch_description() -> LaunchDescription:
     pkg_share = get_package_share_directory("p73_cc")
-    default_cfg = os.path.join(pkg_share, "config", "joy_8bitdo_ultimate2.yaml")
+    # Linux dongle → use Linux-specific yaml (axis indices differ from Windows)
+    default_cfg = os.path.join(pkg_share, "config", "joy_8bitdo_ultimate2_linux.yaml")
 
     cfg_arg = DeclareLaunchArgument(
         "config",

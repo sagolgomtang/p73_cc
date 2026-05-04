@@ -60,6 +60,7 @@ class JoyTeleop(Node):
 
         # Buttons
         self.declare_parameter("button_push", 0)         # A
+        self.declare_parameter("button_viz_toggle", 2)   # X — mujoco contact-force viz
         self.declare_parameter("button_reset", 3)        # Y
         self.declare_parameter("button_estop", 7)        # Start
         self.declare_parameter("button_deadman", 4)      # LB
@@ -89,6 +90,7 @@ class JoyTeleop(Node):
         self.inv_wz = bool(gp("invert_wz").value)
 
         self.btn_push = int(gp("button_push").value)
+        self.btn_viz_toggle = int(gp("button_viz_toggle").value)
         self.btn_reset = int(gp("button_reset").value)
         self.btn_estop = int(gp("button_estop").value)
         self.btn_deadman = int(gp("button_deadman").value)
@@ -114,6 +116,7 @@ class JoyTeleop(Node):
         self._last_joy_time = 0.0
         self._last_push_time = 0.0
         self._last_btn_push = 0
+        self._last_btn_viz_toggle = 0
         self._last_btn_reset = 0
         self._last_btn_estop = 0
         self._last_btn_scale_up = 0
@@ -132,6 +135,7 @@ class JoyTeleop(Node):
 
         self.cmd_pub = self.create_publisher(Twist, "/p73/cmd_vel", qos)
         self.push_pub = self.create_publisher(Empty, "/p73/push_event", qos)
+        self.viz_toggle_pub = self.create_publisher(Empty, "/p73/viz_toggle", qos)
 
         self.sub = self.create_subscription(Joy, "/joy", self._on_joy, qos)
 
@@ -164,6 +168,7 @@ class JoyTeleop(Node):
         self._wz = ax_wz * self.max_wz * self.scale
 
         b_push = btn(self.btn_push)
+        b_viz = btn(self.btn_viz_toggle)
         b_reset = btn(self.btn_reset)
         b_estop = btn(self.btn_estop)
         b_su = btn(self.btn_scale_up)
@@ -178,6 +183,10 @@ class JoyTeleop(Node):
                 self.push_pub.publish(Empty())
                 self._last_push_time = now
                 self.get_logger().info("push_event sent")
+
+        if b_viz == 1 and self._last_btn_viz_toggle == 0:
+            self.viz_toggle_pub.publish(Empty())
+            self.get_logger().info("viz_toggle sent (mujoco contact-force)")
 
         if b_reset == 1 and self._last_btn_reset == 0:
             self.scale = 1.0
@@ -196,6 +205,7 @@ class JoyTeleop(Node):
             self.get_logger().info(f"scale = {self.scale:.2f}")
 
         self._last_btn_push = b_push
+        self._last_btn_viz_toggle = b_viz
         self._last_btn_reset = b_reset
         self._last_btn_estop = b_estop
         self._last_btn_scale_up = b_su
@@ -205,14 +215,22 @@ class JoyTeleop(Node):
         now = time.monotonic()
         joy_alive = (now - self._last_joy_time) <= self.joy_timeout_s and self._last_joy_time > 0.0
 
-        msg = Twist()
-        if self.estop_active or not joy_alive or not self._deadman_held:
-            pass
-        else:
-            msg.linear.x = float(self._vx)
-            msg.linear.y = float(self._vy)
-            msg.angular.z = float(self._wz)
+        if self.estop_active:
+            # Estop must override anything else: actively flatten the command
+            # to make sure no other publisher's value lingers in the bus.
+            self.cmd_pub.publish(Twist())
+            return
 
+        if not joy_alive or not self._deadman_held:
+            # Idle: nobody is actively driving. DO NOT publish a 0 every tick —
+            # other publishers (GUI sliders, automated commands, etc.) might be
+            # owning cmd_vel and we'd race with them. Stay silent.
+            return
+
+        msg = Twist()
+        msg.linear.x = float(self._vx)
+        msg.linear.y = float(self._vy)
+        msg.angular.z = float(self._wz)
         self.cmd_pub.publish(msg)
 
 

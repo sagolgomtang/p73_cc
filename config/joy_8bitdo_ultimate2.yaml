@@ -13,13 +13,14 @@ p73_joy_teleop:
     # ---- Axes (typical XInput layout) ----
     axis_vx: 1            # left stick Y
     axis_vy: 0            # left stick X
-    axis_wz: 3            # right stick X
-    invert_vx: false      # stick up   = +vx (forward)
+    axis_wz: 2            # right stick X (was 3 = right stick Y; user wants X-axis steering)
+    invert_vx: true       # stick up   = +vx (forward) — pygame Y is -1 up, so we invert
     invert_vy: true       # stick left = +vy (left strafe)
     invert_wz: true       # stick left = +wz (CCW)
 
     # ---- Buttons (typical XInput layout) ----
     button_push: 0        # A  -> push_event (random push, sim)
+    button_viz_toggle: 2  # X  -> toggle mujoco contact-force visualization (matches the 'f' key)
     button_reset: 3       # Y  -> reset scale + clear estop
     button_estop: 7       # Start -> toggle emergency stop
     button_deadman: 4     # LB -> deadman (only required if require_deadman=true)

@@ -158,8 +158,8 @@ void CustomController::loadOnnX()
 // =====================================================================
 // processNoise — TOCABI sim2real pattern
 //
-// Real robot: direct sensor values + 4Hz LPF on velocity
-// Simulation: tiny noise on position + numerical differentiation + 4Hz LPF
+// Real robot: direct sensor values for both q and q_dot
+// Simulation: tiny noise on position + numerical differentiation
 //
 // q_noise_ and q_vel_noise_ are used by BOTH obs AND PD (consistent)
 // =====================================================================
@@ -169,15 +169,8 @@ void CustomController::processNoise()
 
     if (is_on_robot_)
     {
-        // Real robot: use sensor values directly, smooth velocity with LPF
+        // Real robot: use sensor values directly
         q_noise_ = rd_.q_;
-
-        double dt = noise_time_cur_ - noise_time_pre_;
-        if (dt > 0.0) {
-            double sampling_freq = 1.0 / dt;
-            q_dot_lpf_ = DyrosMath::lpf<MODEL_DOF>(rd_.q_dot_, q_dot_lpf_, sampling_freq, lpf_cutoff_hz_);
-        }
-        // q_vel_noise_ = q_dot_lpf_;
         q_vel_noise_ = rd_.q_dot_;
     }
     else
@@ -192,8 +185,6 @@ void CustomController::processNoise()
         double dt = noise_time_cur_ - noise_time_pre_;
         if (dt > 0.0) {
             q_vel_noise_ = (q_noise_ - q_noise_pre_) / dt;
-            double sampling_freq = 1.0 / dt;
-            q_dot_lpf_ = DyrosMath::lpf<MODEL_DOF>(q_vel_noise_, q_dot_lpf_, sampling_freq, lpf_cutoff_hz_);
         }
 
         q_noise_pre_ = q_noise_;
@@ -366,7 +357,6 @@ void CustomController::computeFast()
         q_noise_ = rd_.q_;
         q_noise_pre_ = q_noise_;
         q_vel_noise_.setZero();
-        q_dot_lpf_.setZero();
         noise_time_cur_ = control_time_us / 1e6;
         noise_time_pre_ = noise_time_cur_ - 0.001;
 

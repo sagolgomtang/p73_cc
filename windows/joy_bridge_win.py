@@ -4,16 +4,27 @@ Windows-side joystick bridge for the P73 walker.
   pygame.joystick (XInput) --> UDP packets --> Linux: joy_udp_receiver.py
                                                   --> /joy --> p73_joy_teleop --> /p73/cmd_vel
 
-Usage:
-  py -3 joy_bridge_win.py --target 100.x.x.x          # Tailscale IP of workstation
-  py -3 joy_bridge_win.py --target 100.x.x.x --port 35731 --rate 50
+Two run modes:
 
-Behavior:
-  - Polls every joystick event; sends a packet at `--rate` Hz with the latest state.
-  - If no joystick is connected, waits and re-polls once a second; logs once.
-  - On unplug, sends ONE packet with all-zero axes/buttons, then resumes polling.
-  - System tray icon (optional, requires `pystray + pillow`) shows status; falls
-    back to plain console if those aren't installed.
+  (a) Manual / always-on (default):
+        python joy_bridge_win.py --target 100.x.x.x
+      Stays alive forever; if no joystick is present, polls every 0.5 s and
+      logs once. Plug/unplug freely. Quit with Ctrl+C.
+
+  (b) USB-event-triggered (auto-start mode used by install_autostart.bat):
+        python joy_bridge_win.py --target 100.x.x.x --exit-on-disconnect --connect-timeout 5
+      The Windows Task Scheduler launches this on every USB device-started
+      event. The script:
+        1. Acquires a single-instance lock on 127.0.0.1:35730. If another
+           instance is already running, exits 0 immediately (no spam launches).
+        2. Tries to acquire the joystick. If none appears within
+           --connect-timeout seconds, sends ZERO packet and exits 0
+           (so memory drops to 0 when nothing is plugged in).
+        3. Streams joystick state at --rate Hz.
+        4. On unplug, sends ONE zero packet and exits 0 (Task Scheduler will
+           re-launch it next time the dongle is plugged back in).
+      This keeps memory at 0 while no dongle is plugged, and ~50 MB only
+      while the dongle is connected.
 
 Wire format (must match scripts/joy_udp_receiver.py on the Linux side):
   magic "P73J", uint16 version=1, uint32 seq, uint8 num_axes, uint8 num_buttons,
@@ -37,6 +48,9 @@ MAGIC = b"P73J"
 VERSION = 1
 HEADER_FMT = "<4sHIBB"
 
+# Loopback port used purely as a single-instance mutex.
+SINGLE_INSTANCE_PORT = 35730
+
 
 def build_packet(seq: int, axes: list[float], buttons: list[int]) -> bytes:
     n_axes = len(axes)
@@ -54,11 +68,26 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--rate", type=float, default=50.0, help="Send rate in Hz.")
     p.add_argument("--joystick-index", type=int, default=0, help="pygame joystick index.")
     p.add_argument("--quiet", action="store_true", help="Suppress per-second status prints.")
+    p.add_argument(
+        "--exit-on-disconnect",
+        action="store_true",
+        help="Exit cleanly when the joystick is unplugged (used by USB-event-triggered auto-start).",
+    )
+    p.add_argument(
+        "--connect-timeout",
+        type=float,
+        default=0.0,
+        help=(
+            "If > 0, exit cleanly after this many seconds without finding a joystick. "
+            "Used by USB-event-triggered auto-start so spurious launches release memory fast. "
+            "0 = wait forever (default for manual use)."
+        ),
+    )
     return p.parse_args()
 
 
 def acquire_joystick(idx: int):
-    """Return a pygame.Joystick, waiting + retrying until one shows up."""
+    """Return a pygame.Joystick if one is present, else None. Re-init each call."""
     pygame.joystick.quit()
     pygame.joystick.init()
     n = pygame.joystick.get_count()
@@ -71,8 +100,41 @@ def acquire_joystick(idx: int):
     return js
 
 
+def acquire_single_instance_lock() -> socket.socket | None:
+    """Bind a UDP socket on 127.0.0.1 as a process-wide mutex.
+
+    Returns the bound socket on success (caller must keep it alive), or None
+    if another instance already owns the lock. The OS releases the port when
+    this process exits, so it's a self-cleaning lock.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # Don't set SO_REUSEADDR — we want bind() to fail if someone else holds it.
+        s.bind(("127.0.0.1", SINGLE_INSTANCE_PORT))
+    except OSError:
+        s.close()
+        return None
+    return s
+
+
+def send_zero_packet(sock: socket.socket, target: tuple[str, int], seq: int) -> None:
+    """Best-effort: tell the receiver to flatten cmd_vel before we exit."""
+    try:
+        sock.sendto(build_packet(seq, [0.0] * 6, [0] * 11), target)
+    except OSError:
+        pass
+
+
 def main() -> int:
     args = parse_args()
+
+    # Single-instance lock prevents Task-Scheduler-fired duplicates from stacking
+    # when several USB plug events fire close together.
+    lock = acquire_single_instance_lock()
+    if lock is None:
+        # Another instance is already running — that's fine, nothing to do.
+        print("[joy_bridge_win] another instance is already running; exiting.", flush=True)
+        return 0
 
     pygame.display.init()    # required on some Windows builds before joystick
     pygame.event.set_allowed(None)
@@ -86,18 +148,35 @@ def main() -> int:
     js = None
     js_name = ""
 
-    print(f"[joy_bridge_win] target={target[0]}:{target[1]} rate={args.rate}Hz", flush=True)
+    print(
+        f"[joy_bridge_win] target={target[0]}:{target[1]} rate={args.rate}Hz "
+        f"exit_on_disconnect={args.exit_on_disconnect} connect_timeout={args.connect_timeout}s",
+        flush=True,
+    )
+
+    # Time we started looking for a joystick, used for --connect-timeout.
+    waiting_since = time.monotonic()
 
     try:
         while True:
             if js is None:
                 js = acquire_joystick(args.joystick_index)
                 if js is None:
+                    # Nothing plugged in (yet).
+                    if args.connect_timeout > 0.0 and (time.monotonic() - waiting_since) >= args.connect_timeout:
+                        print(
+                            f"[joy_bridge_win] no joystick within {args.connect_timeout}s; exiting cleanly.",
+                            flush=True,
+                        )
+                        send_zero_packet(sock, target, seq)
+                        return 0
                     if time.time() - last_print > 2.0:
                         print("[joy_bridge_win] waiting for a joystick to be plugged in...", flush=True)
                         last_print = time.time()
                     time.sleep(0.5)
                     continue
+                # Successfully acquired — reset the connect-timeout window.
+                waiting_since = time.monotonic()
                 js_name = js.get_name()
                 print(f"[joy_bridge_win] joystick connected: {js_name} "
                       f"(axes={js.get_numaxes()}, buttons={js.get_numbuttons()})", flush=True)
@@ -106,10 +185,10 @@ def main() -> int:
             try:
                 pygame.event.pump()
             except pygame.error:
-                # Joystick was likely yanked.
+                # Joystick was likely yanked; the next get_axis call will raise.
                 pass
 
-            # If joystick became invalid (unplugged), send one zero packet and reacquire.
+            # If joystick became invalid (unplugged), send one zero packet and reacquire/exit.
             try:
                 n_axes = js.get_numaxes()
                 n_btns = js.get_numbuttons()
@@ -117,12 +196,13 @@ def main() -> int:
                 buttons = [int(js.get_button(i)) for i in range(n_btns)]
             except pygame.error:
                 print("[joy_bridge_win] joystick disconnected; sending zero packet.", flush=True)
-                try:
-                    sock.sendto(build_packet(seq, [0.0] * 6, [0] * 11), target)
-                    seq += 1
-                except OSError:
-                    pass
+                send_zero_packet(sock, target, seq)
+                seq += 1
+                if args.exit_on_disconnect:
+                    print("[joy_bridge_win] --exit-on-disconnect: exiting.", flush=True)
+                    return 0
                 js = None
+                waiting_since = time.monotonic()
                 continue
 
             try:
@@ -144,12 +224,13 @@ def main() -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        send_zero_packet(sock, target, seq)
         try:
-            sock.sendto(build_packet(seq, [0.0] * 6, [0] * 11), target)
+            sock.close()
         except OSError:
             pass
         try:
-            sock.close()
+            lock.close()
         except OSError:
             pass
         pygame.quit()

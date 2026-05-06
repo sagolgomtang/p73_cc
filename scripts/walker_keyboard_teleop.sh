@@ -26,9 +26,20 @@ TELEOP_PY="${HOME}/ros2_ws/src/p73_cc/scripts/walker_teleop.py"
 unset CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_PROMPT_MODIFIER PYTHONPATH
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# --- ROS env ---------------------------------------------------------------
-# shellcheck disable=SC1091
-source /opt/ros/jazzy/setup.bash
+# --- ROS env (auto-detect distro) ------------------------------------------
+ROS_FOUND=0
+for d in /opt/ros/jazzy /opt/ros/humble /opt/ros/iron /opt/ros/rolling; do
+    if [[ -f "$d/setup.bash" ]]; then
+        # shellcheck disable=SC1091
+        source "$d/setup.bash"
+        ROS_FOUND=1
+        break
+    fi
+done
+if [[ "$ROS_FOUND" -eq 0 ]]; then
+    echo "[walker-key] ERROR: no ROS2 found in /opt/ros/. Install ROS2 first."
+    exit 1
+fi
 # shellcheck disable=SC1091
 source "${HOME}/ros2_ws/install/setup.bash"
 

@@ -1,22 +1,9 @@
 #!/usr/bin/env python3
 """
-Joystick teleop for P73 walker.
+[DEPRECATED] Legacy joystick-only teleop for P73 walker.
 
-Subscribes:  /joy           (sensor_msgs/Joy)              from joy_node OR joy_udp_receiver
-Publishes:   /p73/cmd_vel   (geometry_msgs/Twist)          consumed by cc.cpp
-             /p73/push_event (std_msgs/Empty)              consumed by sim push handler
-
-Default mapping (8BitDo Ultimate 2, XInput mode):
-  Left stick X  -> -vy   (left = +vy)
-  Left stick Y  ->  vx   (up   = +vx)
-  Right stick X -> -wz   (left = +wz)
-  A button       -> push_event (random push, sim only; ignored on real robot)
-  Y button       -> reset cmd_vel to 0
-  Start          -> emergency stop (publish 0 forever until released)
-  LB (deadman)   -> if `require_deadman` is true, cmd_vel is only published when LB held
-
-All mapping/scaling is loaded from a YAML param file so a different controller
-can be supported without code changes.
+This file is kept for backward compatibility with systemd launch files.
+Use walker-teleop (walker_teleop.sh → walker_teleop.py) instead.
 """
 
 from __future__ import annotations
@@ -251,4 +238,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    print(
+        "[DEPRECATED] p73_joy_teleop.py is no longer used standalone.\n"
+        "  Use: walker-teleop\n"
+        "  (bash ~/ros2_ws/src/p73_cc/scripts/walker_teleop.sh)"
+    )
+    sys.exit(1)

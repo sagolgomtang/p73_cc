@@ -40,7 +40,10 @@ if [[ "$ROS_FOUND" -eq 0 ]]; then
     exit 1
 fi
 # shellcheck disable=SC1091
-source "${HOME}/ros2_ws/install/setup.bash"
+# Derive workspace root from script location (works as root or normal user)
+# SCRIPT_DIR = .../ros2_ws/src/p73_cc/scripts → WS = .../ros2_ws
+WS_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+source "${WS_ROOT}/install/setup.bash"
 
 # --- stop joy systemd services (they must not run independently) -----------
 for svc in "$SERVICE_UDP" "$SERVICE_LOCAL"; do

@@ -443,6 +443,170 @@ def plot_obs_frame(t, d, out):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Contact Force plots (from contact_force_*.csv if available)
+# ═══════════════════════════════════════════════════════════════════
+
+def _find_contact_force_csv(mujoco_csv_path: Path) -> Optional[Path]:
+    """mujoco_YYMMDD_HHMMSS.csv에 대응하는 contact_force CSV 찾기.
+
+    같은 디렉토리에서 같은 날짜(YYMMDD)의 contact_force CSV 중
+    타임스탬프가 가장 가까운 것을 반환.
+    """
+    log_dir = mujoco_csv_path.parent
+    stem = mujoco_csv_path.stem  # "mujoco_260517_193149"
+    parts = stem.split("_", 1)
+    if len(parts) < 2:
+        return None
+    mujoco_ts = parts[1]  # "260517_193149"
+    mujoco_date = mujoco_ts[:6]
+
+    candidates = sorted(log_dir.glob("contact_force_*.csv"))
+    if not candidates:
+        return None
+
+    # 같은 날짜 필터
+    same_day = []
+    for c in candidates:
+        c_ts = c.stem.replace("contact_force_", "")
+        if c_ts[:6] == mujoco_date:
+            same_day.append(c)
+
+    if not same_day:
+        return None
+
+    # HHMMSS 기준 가장 가까운 것
+    try:
+        mujoco_hms = int(mujoco_ts[7:])
+        best = min(same_day, key=lambda c: abs(
+            int(c.stem.replace("contact_force_", "")[7:]) - mujoco_hms
+        ))
+        return best
+    except (ValueError, IndexError):
+        return same_day[0]
+
+
+def _merge_contact_force(t: np.ndarray, d: Dict[str, np.ndarray],
+                         cf_path: Path) -> bool:
+    """contact_force CSV를 d에 merge. 성공하면 True."""
+    try:
+        cf_header, cf_data = load_csv(cf_path)
+    except Exception:
+        return False
+
+    if "time" not in cf_data or "foot_force_lz" not in cf_data:
+        return False
+
+    cf_t = cf_data["time"]
+    if len(cf_t) < 10:
+        return False
+
+    # time overlap 구간
+    t_start = max(t[0], cf_t[0])
+    t_end = min(t[-1], cf_t[-1])
+    if t_end <= t_start:
+        return False
+
+    # mujoco time 기준으로 nearest interp
+    force_cols = ["foot_force_lx", "foot_force_ly", "foot_force_lz",
+                  "foot_force_rx", "foot_force_ry", "foot_force_rz"]
+
+    for col in force_cols:
+        if col in cf_data:
+            d[col] = np.interp(t, cf_t, cf_data[col])
+        else:
+            d[col] = np.zeros_like(t)
+
+    # total Fz
+    d["foot_force_z_total"] = np.abs(d["foot_force_lz"]) + np.abs(d["foot_force_rz"])
+
+    return True
+
+
+def plot_contact_force(t, d, out):
+    """Contact force 시계열 — 08_contact_force.png"""
+    if "foot_force_lz" not in d:
+        return None
+
+    fig, axes = plt.subplots(3, 1, figsize=(18, 9), sharex=True)
+    fig.suptitle("Contact Force (from MuJoCo cfrc_ext)", fontsize=14)
+
+    # Fz per foot
+    axes[0].plot(t, np.abs(d["foot_force_lz"]), "b-", lw=0.7, alpha=0.8, label="Left Fz")
+    axes[0].plot(t, np.abs(d["foot_force_rz"]), "r-", lw=0.7, alpha=0.8, label="Right Fz")
+    axes[0].set_ylabel("Vertical Force Fz (N)")
+    axes[0].legend(fontsize=8)
+    axes[0].grid(True, alpha=0.3)
+
+    # Total Fz
+    fz_total = d.get("foot_force_z_total", np.abs(d["foot_force_lz"]) + np.abs(d["foot_force_rz"]))
+    axes[1].plot(t, fz_total, "k-", lw=0.7, alpha=0.8, label="Total Fz")
+    axes[1].axhline(y=591, color="gray", ls="--", lw=0.8, alpha=0.5, label="Body weight (591N)")
+    axes[1].set_ylabel("Total Fz (N)")
+    axes[1].legend(fontsize=8)
+    axes[1].grid(True, alpha=0.3)
+
+    # Fx, Fy (lateral/sagittal)
+    axes[2].plot(t, d.get("foot_force_lx", np.zeros_like(t)), "b-", lw=0.5, alpha=0.6, label="Left Fx")
+    axes[2].plot(t, d.get("foot_force_ly", np.zeros_like(t)), "b--", lw=0.5, alpha=0.6, label="Left Fy")
+    axes[2].plot(t, d.get("foot_force_rx", np.zeros_like(t)), "r-", lw=0.5, alpha=0.6, label="Right Fx")
+    axes[2].plot(t, d.get("foot_force_ry", np.zeros_like(t)), "r--", lw=0.5, alpha=0.6, label="Right Fy")
+    axes[2].set_ylabel("Shear Force (N)")
+    axes[2].set_xlabel("time [s]")
+    axes[2].legend(fontsize=7, ncol=4)
+    axes[2].grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    path = out / "10_contact_force.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
+def plot_contact_force_stats(t, d, out):
+    """Contact force 통계 — 09_contact_force_stats.png"""
+    if "foot_force_lz" not in d:
+        return None
+
+    fz_total = d.get("foot_force_z_total", np.abs(d["foot_force_lz"]) + np.abs(d["foot_force_rz"]))
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig.suptitle("Contact Force Statistics", fontsize=14)
+
+    # Histogram
+    axes[0].hist(fz_total, bins=100, alpha=0.7, color="#2ca02c", edgecolor="#2ca02c")
+    p95 = np.nanpercentile(fz_total, 95)
+    axes[0].axvline(p95, color="red", ls="--", lw=1.2, label=f"P95 = {p95:.0f} N")
+    axes[0].axvline(591, color="gray", ls="--", lw=0.8, label="Body weight (591N)")
+    axes[0].set_xlabel("Total Fz (N)")
+    axes[0].set_ylabel("Count")
+    axes[0].legend(fontsize=8)
+    axes[0].grid(True, alpha=0.3)
+
+    # Peak detection & box plot
+    peaks = []
+    for i in range(1, len(fz_total) - 1):
+        if fz_total[i] > fz_total[i-1] and fz_total[i] > fz_total[i+1] and fz_total[i] > 50:
+            peaks.append(fz_total[i])
+
+    if peaks:
+        bp = axes[1].boxplot([peaks], labels=["Peak Fz"], patch_artist=True, widths=0.4)
+        bp["boxes"][0].set_facecolor("#2ca02c")
+        bp["boxes"][0].set_alpha(0.6)
+        axes[1].set_ylabel("Peak Fz per step (N)")
+        mean_p = np.mean(peaks)
+        axes[1].axhline(mean_p, color="green", ls="--", lw=0.8, alpha=0.7,
+                         label=f"Mean peak = {mean_p:.0f} N")
+        axes[1].legend(fontsize=8)
+    axes[1].grid(axis="y", alpha=0.3)
+
+    fig.tight_layout()
+    path = out / "11_contact_force_stats.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    return path
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Compare mode: sim vs real overlaid
 # ═══════════════════════════════════════════════════════════════════
 
@@ -818,6 +982,18 @@ def plot_csv(csv_path: Path, show: bool = False) -> Path:
     t = data["time"]
     out_dir = PLOT_BASE_DIR / csv_path.stem
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Auto-merge contact_force CSV if available (simulation only)
+    if "mujoco" in csv_path.stem:
+        cf_path = _find_contact_force_csv(csv_path)
+        if cf_path:
+            ok = _merge_contact_force(t, data, cf_path)
+            if ok:
+                print(f"[plot] ✅ Contact force merged: {cf_path.name}")
+            else:
+                print(f"[plot] ⚠️ Contact force CSV found but merge failed: {cf_path.name}")
+        # else: no contact_force CSV — plots 08/09 will be skipped silently
+
     saved: List[Path] = []
     for fn in [
         lambda: plot_imu(t, data, out_dir),
@@ -833,6 +1009,8 @@ def plot_csv(csv_path: Path, show: bool = False) -> Path:
         lambda: plot_torque_des_vs_meas_motor(t, data, out_dir),
         lambda: plot_actuator_net_inputs(t, data, out_dir),
         lambda: plot_obs_frame(t, data, out_dir),
+        lambda: plot_contact_force(t, data, out_dir),
+        lambda: plot_contact_force_stats(t, data, out_dir),
     ]:
         p = fn()
         if p: saved.append(p)

@@ -755,6 +755,7 @@ void CustomController::startVelSubscriber()
     });
     cout << "[p73_cc] Velocity command subscriber started on topic: /p73/cmd_vel" << endl;
     cout << "[p73_cc] Usage: python3 ~/Walker_ws/src/p73_cc/scripts/walker_teleop.py" << endl;
+
 }
 
 void CustomController::stopVelSubscriber()

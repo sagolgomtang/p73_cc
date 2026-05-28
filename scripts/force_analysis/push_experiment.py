@@ -144,7 +144,7 @@ def main():
                     help="Push magnitudes (N)")
     ap.add_argument("--directions", nargs="+", default=["+x", "-x", "+y", "-y"],
                     help="Push directions")
-    ap.add_argument("--trials", type=int, default=10, help="Trials per condition")
+    ap.add_argument("--trials", type=int, default=5, help="Trials per condition")
     ap.add_argument("--duration", type=float, default=0.5, help="Push duration (s)")
     ap.add_argument("--interval", type=float, default=5.0,
                     help="Seconds between pushes (recovery time)")

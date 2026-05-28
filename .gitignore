@@ -13,6 +13,11 @@ __pycache__/
 events.out.tfevents.*
 *.pt
 
+# ONNX policies (managed in ~/experiments/, not git)
+policy/*.onnx
+policy/*.onnx.bak
+policy/archive/
+
 # Editor / OS
 .vscode/
 .idea/

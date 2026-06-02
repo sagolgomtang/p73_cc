@@ -4,9 +4,20 @@
 #include "p73_lib/robot_data.h"
 #include "p73_lib/4bar_jac_func.h"
 // #include "wholebody_functions.h"
+#if __has_include(<onnxruntime/onnxruntime_cxx_api.h>)
+#include <onnxruntime/onnxruntime_cxx_api.h>
+#else
 #include "onnxruntime_cxx_api.h"
+#endif
+#include "ament_index_cpp/get_package_share_directory.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
+#include <sensor_msgs/msg/joy.hpp>
+#include <std_msgs/msg/empty.hpp>
+#include <std_msgs/msg/float32_multi_array.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <chrono>
 #include <fstream>
 #include <sstream>
 #include <array>
@@ -134,6 +145,53 @@ public:
     double target_vel_yaw_ = 0.0;
     double cmd_zero_max_ = 1.0e-3;
 
+    // Direct joystick command config, copied from IsaacLab play_with_joy.py.
+    int joy_axis_vx_ = 1;
+    int joy_axis_vy_ = 0;
+    int joy_axis_wz_ = 3;
+    int joy_axis_cam_elev_ = 7;
+    bool joy_invert_vx_ = false;
+    bool joy_invert_vy_ = false;
+    bool joy_invert_wz_ = false;
+    double joy_max_vx_ = 1.0;
+    double joy_max_vy_ = 0.5;
+    double joy_max_wz_ = 0.6;
+    double joy_deadzone_ = 0.20;
+    double joy_timeout_s_ = 0.5;
+    int joy_btn_lock_ = 0;
+    int joy_btn_cam_yaw_pos_ = 4;
+    int joy_btn_cam_yaw_neg_ = 5;
+    int joy_btn_cam_zoom_in_ = 6;
+    int joy_btn_cam_zoom_out_ = 7;
+    int joy_btn_reset_ = 9;
+    int joy_btn_exit_ = 10;
+    double joy_cam_yaw_step_ = 0.025;
+    double joy_cam_pitch_rate_ = 0.012;
+    double joy_cam_pitch_max_ = 1.2;
+    double joy_cam_zoom_in_ = 0.985;
+    double joy_cam_zoom_out_ = 1.015;
+    double joy_cam_radius_min_ = 0.5;
+    double joy_cam_radius_max_ = 20.0;
+    double joy_cam_pitch_ = 0.0;
+    double joy_cam_radius_ = 1.0;
+    bool joy_cmd_locked_ = false;
+    double joy_locked_vx_ = 0.0;
+    double joy_locked_vy_ = 0.0;
+    double joy_locked_wz_ = 0.0;
+    bool joy_command_active_ = false;
+    std::array<int, 16> joy_prev_buttons_{};
+    std::chrono::steady_clock::time_point joy_last_time_{};
+    bool direct_joystick_enabled_ = true;
+    std::string direct_joystick_device_ = "/dev/input/js0";
+    int direct_joystick_fd_ = -1;
+    double direct_joystick_last_open_try_s_ = -1.0;
+    std::vector<float> direct_joy_axes_;
+    std::vector<int32_t> direct_joy_buttons_;
+    std::vector<int32_t> direct_joy_press_latch_;
+    std::thread direct_joy_thread_;
+    std::atomic<bool> direct_joy_running_{false};
+    int prev_axis6_dir_ = 0;
+
     double value_ = 0.0;
 
     string weight_dir_;
@@ -144,10 +202,20 @@ public:
     rclcpp::CallbackGroup::SharedPtr vel_cbg_;
     rclcpp::executors::SingleThreadedExecutor vel_executor_;
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr vel_sub_;
+    rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;
+    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr tocabi_cam_cmd_pub_;
+    rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr joy_camera_pub_;
+    rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr joy_reset_pub_;
+    rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr joy_exit_pub_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr gui_cmd_pub_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr sim_command_pub_;
     std::thread vel_spin_thread_;
     std::atomic<bool> vel_spin_running_{false};
 
     void velCmdCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
+    void joyCmdCallback(const sensor_msgs::msg::Joy::SharedPtr msg);
+    void pollDirectJoystick();
+    void closeDirectJoystick();
     void startVelSubscriber();
     void stopVelSubscriber();
 

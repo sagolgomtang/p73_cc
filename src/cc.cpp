@@ -1,8 +1,26 @@
 #include "cc.h"
 #include <cmath>
+#include <filesystem>
 #include <iomanip>
 #include <numeric>
 #include <fstream>
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <linux/joystick.h>
+#include <unistd.h>
+
+namespace {
+double applyDeadzone(double v, double dz)
+{
+    return (std::abs(v) < dz) ? 0.0 : v;
+}
+
+double clampValue(double v, double lo, double hi)
+{
+    return std::max(lo, std::min(hi, v));
+}
+}  // namespace
 
 // =====================================================================
 // NOTE on joint ordering:
@@ -25,11 +43,29 @@ CustomController::CustomController(DataContainer &dc, RobotEigenData &rd)
         memory_info(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)),
         session(nullptr)
 {
-    if(is_on_robot_){
-        weight_dir_ = "/home/bluerobin/ros2_ws/src/p73_cc/policy/policy.onnx";
+    namespace fs = std::filesystem;
+
+    bool sim_mode = true;
+    bool got_sim_mode_param = false;
+    if (dc_.node_) {
+        got_sim_mode_param = dc_.node_->get_parameter("sim_mode", sim_mode);
     }
-    else{
-        weight_dir_ = std::string(getenv("HOME")) + "/ros2_ws/src/p73_cc/policy/policy.onnx";
+    dc_.simMode = sim_mode;
+    is_on_robot_ = !sim_mode;
+    cout << "[p73_cc] sim_mode=" << (sim_mode ? "true" : "false")
+         << " (from_param=" << (got_sim_mode_param ? "true" : "false")
+         << "), is_on_robot=" << (is_on_robot_ ? "true" : "false") << endl;
+
+    try {
+        weight_dir_ = ament_index_cpp::get_package_share_directory("p73_cc") + "/policy/policy.onnx";
+    }
+    catch (const std::exception &) {
+        const char *home = getenv("HOME");
+        if (home != nullptr) {
+            const fs::path ws_candidate = fs::path(home) / "p73_mujoco_ws/src/p73_cc/policy/policy.onnx";
+            const fs::path legacy_candidate = fs::path(home) / "ros2_ws/src/p73_cc/policy/policy.onnx";
+            weight_dir_ = fs::exists(ws_candidate) ? ws_candidate.string() : legacy_candidate.string();
+        }
     }
 
     if (is_write_file_) {
@@ -85,6 +121,9 @@ void CustomController::initVariable()
 void CustomController::loadOnnX()
 {
     string cur_path = weight_dir_;
+    if (cur_path.empty() || !std::filesystem::exists(cur_path)) {
+        throw std::runtime_error("[p73_cc] policy.onnx not found: " + cur_path);
+    }
     cout << "[p73_cc] Loading network from " << cur_path << endl;
 
     Ort::SessionOptions session_options;
@@ -237,6 +276,16 @@ void CustomController::processObservation()
     double local_vel_x, local_vel_y, local_vel_yaw;
     {
         std::lock_guard<std::mutex> lock(vel_mutex_);
+        if (joy_command_active_) {
+            const double dt = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - joy_last_time_).count();
+            if (dt > joy_timeout_s_) {
+                target_vel_x_ = 0.0;
+                target_vel_y_ = 0.0;
+                target_vel_yaw_ = 0.0;
+                joy_command_active_ = false;
+            }
+        }
         local_vel_x = target_vel_x_;
         local_vel_y = target_vel_y_;
         local_vel_yaw = target_vel_yaw_;
@@ -527,21 +576,15 @@ void CustomController::computeFast()
         }
         rd_.torque_desired = torque_motor;
     } else {
-        // Evaluate J at the current joint configuration.
-        VectorQd q_motor_curr;
-        sim_four_bar_.Joint2MotorDesiredPos(q_noise_, q_motor_curr);
-        VectorQd joint_pos_dummy, joint_vel_dummy;
-        VectorQd motor_vel_zero = VectorQd::Zero();
-        sim_four_bar_.Motor2JointPosVel(q_motor_curr, joint_pos_dummy, motor_vel_zero, joint_vel_dummy);
-        MatrixQQd J = sim_four_bar_.getFourBarJaco();
-
-        VectorQd torque_motor = J.transpose() * torque_rl_;
+        // MuJoCo p73_walker.xml uses direct joint actuators, so the command must
+        // stay in joint space. Applying the real-robot 4-bar motor transform here
+        // changes the torque direction/magnitude and can make the robot collapse
+        // immediately when RL mode starts.
+        rd_.torque_desired = torque_rl_;
         for (int i = 0; i < MODEL_DOF; i++) {
-            torque_motor(i) = DyrosMath::minmax_cut(torque_motor(i), -torque_bound_p73_(i), torque_bound_p73_(i));
+            rd_.torque_desired(i) = DyrosMath::minmax_cut(
+                rd_.torque_desired(i), -torque_bound_p73_(i), torque_bound_p73_(i));
         }
-        // τ_j' = J^{-T} τ_m_clamped — joint-space torque that realizes the
-        // clamped motor torque through the 4-bar.
-        rd_.torque_desired = J.transpose().inverse() * torque_motor;
     }
 
     // // // Spline transition for first 100ms
@@ -614,8 +657,6 @@ void CustomController::computeFast()
         for (int i = 0; i < MODEL_DOF; i++) log_file << ",tau_meas_motor_" << i;
         // Linear velocity world frame (for critic/debug)
         log_file << ",lin_vel_wx,lin_vel_wy,lin_vel_wz";
-        // measured: rd_.motor_voltage_ from ECAT (motor side, real robot only)
-        for (int i = 0; i < MODEL_DOF; i++) log_file << ",motor_voltage_" << i;
         // Value function output
         log_file << ",value";
         log_file << "\n";
@@ -641,6 +682,16 @@ void CustomController::computeFast()
         double local_vx, local_vy, local_vyaw;
         {
             std::lock_guard<std::mutex> lock(vel_mutex_);
+            if (joy_command_active_) {
+                const double dt = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - joy_last_time_).count();
+                if (dt > joy_timeout_s_) {
+                    target_vel_x_ = 0.0;
+                    target_vel_y_ = 0.0;
+                    target_vel_yaw_ = 0.0;
+                    joy_command_active_ = false;
+                }
+            }
             local_vx = target_vel_x_;
             local_vy = target_vel_y_;
             local_vyaw = target_vel_yaw_;
@@ -682,8 +733,6 @@ void CustomController::computeFast()
         for (int i = 0; i < MODEL_DOF; i++) log_file << "," << rd_.q_torque_motor_(i);
         // Lin vel world
         log_file << "," << lin_vel_w_log(0) << "," << lin_vel_w_log(1) << "," << lin_vel_w_log(2);
-        // Motor voltage
-        for (int i = 0; i < MODEL_DOF; i++) log_file << "," << rd_.motor_voltage_(i);
         // Value
         log_file << "," << value_;
         log_file << "\n";
@@ -732,6 +781,220 @@ void CustomController::velCmdCallback(const geometry_msgs::msg::Twist::SharedPtr
     target_vel_x_ = msg->linear.x;
     target_vel_y_ = msg->linear.y;
     target_vel_yaw_ = msg->angular.z;
+    joy_command_active_ = false;
+}
+
+void CustomController::joyCmdCallback(const sensor_msgs::msg::Joy::SharedPtr msg)
+{
+    auto axis_val = [&](int i) -> double {
+        if (i < 0 || static_cast<int>(msg->axes.size()) <= i) return 0.0;
+        double v = static_cast<double>(msg->axes[i]);
+        if (std::abs(v) < joy_deadzone_) v = 0.0;
+        return -v;
+    };
+    auto button = [&](int i, int default_value = 0) -> int {
+        return (0 <= i && i < static_cast<int>(msg->buttons.size())) ? static_cast<int>(msg->buttons[i]) : default_value;
+    };
+    auto pressed = [&](int i) -> bool {
+        if (i < 0 || static_cast<int>(joy_prev_buttons_.size()) <= i) return false;
+        const int cur = button(i);
+        const int prev = joy_prev_buttons_[i];
+        joy_prev_buttons_[i] = cur;
+        return cur == 1 && prev == 0;
+    };
+
+    const double cmd_vx = DyrosMath::minmax_cut(axis_val(1) * joy_max_vx_, -joy_max_vx_, joy_max_vx_);
+    const double cmd_vy = DyrosMath::minmax_cut(axis_val(0) * joy_max_vy_, -joy_max_vy_, joy_max_vy_);
+    const double cmd_wz = DyrosMath::minmax_cut(axis_val(3) * joy_max_wz_, -joy_max_wz_, joy_max_wz_);
+
+    int yaw_dir = 0;
+    if (button(4) != 0) yaw_dir += 1;
+    if (button(5) != 0) yaw_dir -= 1;
+    int zoom_dir = 0;
+    if (button(6) != 0) zoom_dir += 1;
+    if (button(7) != 0) zoom_dir -= 1;
+    double elev_axis = 0.0;
+    if (msg->axes.size() > 7) {
+        elev_axis = axis_val(7);
+        if (std::abs(elev_axis) < joy_deadzone_) elev_axis = 0.0;
+    } else if (msg->axes.size() > 8) {
+        elev_axis = axis_val(8);
+    } else if (msg->axes.size() > 4) {
+        elev_axis = axis_val(4);
+    }
+
+    if (!is_on_robot_ && (yaw_dir != 0 || zoom_dir != 0 || elev_axis != 0.0) && joy_camera_pub_) {
+        std_msgs::msg::Float64MultiArray cam_msg;
+        cam_msg.data.resize(3);
+        cam_msg.data[0] = static_cast<double>(yaw_dir);
+        cam_msg.data[1] = static_cast<double>(zoom_dir);
+        cam_msg.data[2] = elev_axis;
+        joy_camera_pub_->publish(cam_msg);
+    }
+    if (!is_on_robot_ && (yaw_dir != 0 || zoom_dir != 0 || elev_axis != 0.0) && tocabi_cam_cmd_pub_) {
+        std_msgs::msg::Float32MultiArray cam_msg;
+        cam_msg.data.resize(3);
+        cam_msg.data[0] = static_cast<float>(yaw_dir);
+        cam_msg.data[1] = static_cast<float>(zoom_dir);
+        cam_msg.data[2] = static_cast<float>(elev_axis);
+        tocabi_cam_cmd_pub_->publish(cam_msg);
+    }
+
+    int axis6_dir = 0;
+    if (msg->axes.size() > 6) {
+        const double axis6 = axis_val(6);
+        if (axis6 < -0.5) axis6_dir = 1;
+        else if (axis6 > 0.5) axis6_dir = -1;
+    }
+    if (!is_on_robot_ && axis6_dir != 0 && axis6_dir != prev_axis6_dir_ && sim_command_pub_) {
+        std_msgs::msg::String sim_msg;
+        sim_msg.data = (axis6_dir < 0) ? "ball_throw" : "ball_repeat_toggle";
+        sim_command_pub_->publish(sim_msg);
+    }
+    prev_axis6_dir_ = axis6_dir;
+
+    if (!is_on_robot_ && pressed(0) && sim_command_pub_) {
+        std_msgs::msg::String sim_msg;
+        sim_msg.data = "pause";
+        sim_command_pub_->publish(sim_msg);
+    }
+
+    if (pressed(1)) {
+        cout << "[p73_cc] JOY mode7 toggle requested" << endl;
+    }
+
+    if (!is_on_robot_ && pressed(3) && sim_command_pub_) {
+        std_msgs::msg::String sim_msg;
+        sim_msg.data = "cam_track_base";
+        sim_command_pub_->publish(sim_msg);
+    }
+
+    if (!is_on_robot_ && pressed(8) && sim_command_pub_) {
+        std_msgs::msg::String sim_msg;
+        sim_msg.data = "toggle_grf";
+        sim_command_pub_->publish(sim_msg);
+    }
+
+    if (!is_on_robot_ && pressed(9)) {
+        std::lock_guard<std::mutex> lock(vel_mutex_);
+        target_vel_x_ = 0.0;
+        target_vel_y_ = 0.0;
+        target_vel_yaw_ = 0.0;
+        joy_cmd_locked_ = false;
+        joy_command_active_ = false;
+        policy_hist_initialized_ = false;
+        gait_step_counter_ = 0;
+        if (joy_reset_pub_) joy_reset_pub_->publish(std_msgs::msg::Empty());
+        if (sim_command_pub_) {
+            std_msgs::msg::String sim_msg;
+            sim_msg.data = "mjreset";
+            sim_command_pub_->publish(sim_msg);
+            sim_msg.data = "keyboard_cmd_reset";
+            sim_command_pub_->publish(sim_msg);
+            sim_msg.data = "keyboard_cmd_unlock";
+            sim_command_pub_->publish(sim_msg);
+        }
+        if (gui_cmd_pub_) {
+            std_msgs::msg::String cmd_msg;
+            cmd_msg.data = "safetyReset";
+            gui_cmd_pub_->publish(cmd_msg);
+        }
+        cout << "[p73_cc] JOY reset triggered" << endl;
+        return;
+    }
+
+    if (!is_on_robot_ && pressed(10)) {
+        if (joy_exit_pub_) joy_exit_pub_->publish(std_msgs::msg::Empty());
+        if (sim_command_pub_) {
+            std_msgs::msg::String sim_msg;
+            sim_msg.data = "quit";
+            sim_command_pub_->publish(sim_msg);
+        }
+        cout << "[p73_cc] JOY exit requested" << endl;
+        rclcpp::shutdown();
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(vel_mutex_);
+    joy_last_time_ = std::chrono::steady_clock::now();
+    joy_command_active_ = true;
+    target_vel_x_ = cmd_vx;
+    target_vel_y_ = cmd_vy;
+    target_vel_yaw_ = cmd_wz;
+}
+
+void CustomController::closeDirectJoystick()
+{
+    if (direct_joystick_fd_ >= 0) {
+        close(direct_joystick_fd_);
+        direct_joystick_fd_ = -1;
+    }
+}
+
+void CustomController::pollDirectJoystick()
+{
+    if (!direct_joystick_enabled_) return;
+
+    const double now_s = std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (direct_joystick_fd_ < 0) {
+        if (direct_joystick_last_open_try_s_ >= 0.0 &&
+            (now_s - direct_joystick_last_open_try_s_) < 1.0) {
+            return;
+        }
+
+        direct_joystick_last_open_try_s_ = now_s;
+        direct_joystick_fd_ = open(direct_joystick_device_.c_str(), O_RDONLY | O_NONBLOCK);
+        if (direct_joystick_fd_ < 0) {
+            static int warn_count = 0;
+            if ((warn_count++ % 200) == 0) {
+                cout << "[p73_cc] Failed to open direct joystick " << direct_joystick_device_
+                     << " (" << std::strerror(errno) << ")" << endl;
+            }
+            return;
+        }
+
+        direct_joy_axes_.assign(16, 0.0f);
+        direct_joy_buttons_.assign(16, 0);
+        direct_joy_press_latch_.assign(16, 0);
+        cout << "[p73_cc] Connected direct joystick: " << direct_joystick_device_ << endl;
+    }
+
+    js_event e{};
+    while (true) {
+        const ssize_t n = read(direct_joystick_fd_, &e, sizeof(e));
+        if (n == static_cast<ssize_t>(sizeof(e))) {
+            const uint8_t type = static_cast<uint8_t>(e.type & ~JS_EVENT_INIT);
+            if (type == JS_EVENT_AXIS) {
+                if (e.number >= direct_joy_axes_.size()) direct_joy_axes_.resize(e.number + 1, 0.0f);
+                direct_joy_axes_[e.number] = std::max(-1.0f, std::min(1.0f, static_cast<float>(e.value) / 32767.0f));
+            } else if (type == JS_EVENT_BUTTON) {
+                if (e.number >= direct_joy_buttons_.size()) direct_joy_buttons_.resize(e.number + 1, 0);
+                if (e.number >= direct_joy_press_latch_.size()) direct_joy_press_latch_.resize(e.number + 1, 0);
+                direct_joy_buttons_[e.number] = (e.value != 0) ? 1 : 0;
+                if (e.value != 0) direct_joy_press_latch_[e.number] = 1;
+            }
+            continue;
+        }
+
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+
+        cout << "[p73_cc] Direct joystick disconnected/read error. Reconnecting..." << endl;
+        closeDirectJoystick();
+        return;
+    }
+
+    auto joy_msg = std::make_shared<sensor_msgs::msg::Joy>();
+    joy_msg->axes = direct_joy_axes_;
+    const size_t btn_n = std::max(direct_joy_buttons_.size(), direct_joy_press_latch_.size());
+    joy_msg->buttons.reserve(btn_n);
+    for (size_t i = 0; i < btn_n; ++i) {
+        const int32_t level = (i < direct_joy_buttons_.size()) ? direct_joy_buttons_[i] : 0;
+        const int32_t latched = (i < direct_joy_press_latch_.size()) ? direct_joy_press_latch_[i] : 0;
+        joy_msg->buttons.push_back((level || latched) ? 1 : 0);
+    }
+    joyCmdCallback(joy_msg);
+    std::fill(direct_joy_press_latch_.begin(), direct_joy_press_latch_.end(), 0);
 }
 
 void CustomController::startVelSubscriber()
@@ -747,6 +1010,28 @@ void CustomController::startVelSubscriber()
         "/p73/cmd_vel", 10,
         std::bind(&CustomController::velCmdCallback, this, std::placeholders::_1),
         opts);
+    joy_camera_pub_ = dc_.node_->create_publisher<std_msgs::msg::Float64MultiArray>("/p73/joy_camera", 10);
+    tocabi_cam_cmd_pub_ = dc_.node_->create_publisher<std_msgs::msg::Float32MultiArray>("/tocabi_cc/cam_cmd", 10);
+    joy_reset_pub_ = dc_.node_->create_publisher<std_msgs::msg::Empty>("/p73/joy_reset", 10);
+    joy_exit_pub_ = dc_.node_->create_publisher<std_msgs::msg::Empty>("/p73/joy_exit", 10);
+    gui_cmd_pub_ = dc_.node_->create_publisher<std_msgs::msg::String>("p73/guiCommand", 10);
+    sim_command_pub_ = dc_.node_->create_publisher<std_msgs::msg::String>(
+        "/mujoco_ros_interface/sim_command_con2sim", 10);
+
+    if (direct_joystick_enabled_) {
+        direct_joy_running_ = true;
+        direct_joy_thread_ = std::thread([this]() {
+            while (direct_joy_running_ && rclcpp::ok()) {
+                pollDirectJoystick();
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        });
+    } else {
+        joy_sub_ = dc_.node_->create_subscription<sensor_msgs::msg::Joy>(
+            "/joy", 10,
+            std::bind(&CustomController::joyCmdCallback, this, std::placeholders::_1),
+            opts);
+    }
 
     vel_executor_.add_callback_group(vel_cbg_, dc_.node_->get_node_base_interface());
 
@@ -757,14 +1042,27 @@ void CustomController::startVelSubscriber()
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
     });
-    cout << "[p73_cc] Velocity command subscriber started on topic: /p73/cmd_vel" << endl;
-    cout << "[p73_cc] Usage: python3 ~/Walker_ws/src/p73_cc/scripts/walker_teleop.py" << endl;
+    cout << "[p73_cc] Command subscribers started: /p73/cmd_vel"
+         << (direct_joystick_enabled_ ? " and direct joystick " : " and /joy ")
+         << (direct_joystick_enabled_ ? direct_joystick_device_ : "") << endl;
+    cout << "[p73_cc] tocabi joystick mapping: axes 1/0/3 velocity, btn0 pause, btn3 cam_track_base, btn9 reset, btn10 quit" << endl;
 
 }
 
 void CustomController::stopVelSubscriber()
 {
+    direct_joy_running_ = false;
+    if (direct_joy_thread_.joinable()) direct_joy_thread_.join();
+    closeDirectJoystick();
+
     vel_spin_running_ = false;
     if (vel_spin_thread_.joinable()) vel_spin_thread_.join();
     vel_sub_.reset();
+    joy_sub_.reset();
+    tocabi_cam_cmd_pub_.reset();
+    joy_camera_pub_.reset();
+    joy_reset_pub_.reset();
+    joy_exit_pub_.reset();
+    gui_cmd_pub_.reset();
+    sim_command_pub_.reset();
 }
